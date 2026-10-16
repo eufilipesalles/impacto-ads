@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { getAccounts, getAlerts, getLastSync, getOverview, getPortfolioDaily, syncNow } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { clientBalance, syncError } from "../lib/balance";
-import { costDelta, count, money, one, pct, timeAgo, todayLong } from "../lib/format";
+import { costDelta, count, isSalesClient, money, one, roas, timeAgo, todayLong } from "../lib/format";
 import { OBJECTIVE_LABEL, type ClientOverview } from "../lib/types";
 import { DailyChart } from "../components/DailyChart";
 import { Fuel } from "../components/Fuel";
@@ -157,9 +157,9 @@ export function Today() {
                 <th>Cliente</th>
                 <th className="hide-sm">Gasto ontem</th>
                 <th>Gasto</th>
-                <th>Conversas</th>
-                <th>Custo/conversa</th>
-                <th className="hide-sm">CTR link</th>
+                <th>Resultado</th>
+                <th>Custo/resultado</th>
+                <th className="hide-sm">ROAS</th>
                 <th className="hide-sm">Frequência</th>
                 <th>Saldo dura</th>
               </tr>
@@ -176,7 +176,12 @@ export function Today() {
 
   function renderRow(o: ClientOverview) {
     const err = syncError(accs, o.client_id);
-    const delta = costDelta(o.cost_per_conv_7d, o.cost_per_conv_prev_7d);
+    // Cliente de vendas mostra compras; os demais, conversas iniciadas
+    const sales = isSalesClient(o.objective, o.purchases_7d);
+    const result = sales ? o.purchases_7d : o.conversations_7d;
+    const unit = sales ? (result === 1 ? "compra" : "compras") : (result === 1 ? "conversa" : "conversas");
+    const cost = sales ? o.cost_per_purchase_7d : o.cost_per_conv_7d;
+    const delta = sales ? costDelta(o.cost_per_purchase_7d, o.cost_per_purchase_prev_7d) : costDelta(o.cost_per_conv_7d, o.cost_per_conv_prev_7d);
     const go = () => nav(`/cliente/${o.client_id}${q}`);
     return (
       <tr key={o.client_id} className="link" onClick={go} onKeyDown={(e) => e.key === "Enter" && go()} tabIndex={0}>
@@ -195,14 +200,14 @@ export function Today() {
           <>
             <td className="num hide-sm">{money(o.spend_yesterday)}</td>
             <td className="num">{money(o.spend_7d)}</td>
-            <td className="num">{count(o.conversations_7d)}</td>
+            <td className="num">{count(result)} <span className="unit">{unit}</span></td>
             <td className="num">
-              {money(o.cost_per_conv_7d)}
+              {money(cost)}
               {delta !== null && Math.abs(delta) >= 1 && (
                 <span className={`delta ${delta > 0 ? "bad" : "good"}`}>{delta > 0 ? "▲" : "▼"}{Math.round(Math.abs(delta))}%</span>
               )}
             </td>
-            <td className="num hide-sm">{pct(o.ctr_link_7d)}</td>
+            <td className="num hide-sm">{sales ? roas(o.roas_7d) : <span className="muted">—</span>}</td>
             <td className="num hide-sm">{one(o.freq_7d)}</td>
             <td><Fuel balance={clientBalance(accs, o.client_id)} spend7d={o.spend_7d} /></td>
           </>

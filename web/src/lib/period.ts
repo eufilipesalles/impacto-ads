@@ -3,6 +3,7 @@
 export interface Totals {
   spend: number; impressions: number; reach: number; frequency: number; clicks: number; link_clicks: number;
   conversations: number; leads: number; landing_page_views: number; video_views: number; engagement: number;
+  purchases: number; purchase_value: number; add_to_cart: number; checkouts: number;
 }
 
 export interface Balance {
@@ -18,7 +19,7 @@ export interface PeriodResult {
   campaigns?: { id: string; name: string | null }[];
   totals: Totals | null;
   previous_totals: Totals | null;
-  panel: { spend: number; impressions: number; clicks: number; link_clicks: number; conversations: number; leads: number; video_views: number; days: number };
+  panel: { spend: number; impressions: number; clicks: number; link_clicks: number; conversations: number; leads: number; video_views: number; purchases?: number; purchase_value?: number; days: number };
   accounts: { id: string; name: string | null; current: Totals | null; previous: Totals | null; balance: Balance | null; error: string | null }[];
 }
 

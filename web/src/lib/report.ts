@@ -17,6 +17,13 @@ export interface MetricDef {
 
 export const METRICS: MetricDef[] = [
   { id: "spend", label: "Investimento", emoji: "💰", value: (t) => t.spend, fmt: (v) => brl.format(v) },
+  { id: "purchases", label: "Vendas (compras)", emoji: "🛒", value: (t) => t.purchases, fmt: (v) => int.format(v) },
+  { id: "purchase_value", label: "Faturamento", emoji: "🧾", value: (t) => t.purchase_value, fmt: (v) => brl.format(v) },
+  { id: "roas", label: "ROAS (retorno sobre o investimento)", emoji: "🎯", value: (t) => div(t.purchase_value, t.spend), fmt: (v) => `${dec2.format(v)}x` },
+  { id: "cost_per_purchase", label: "Custo por venda", emoji: "🏷️", value: (t) => div(t.spend, t.purchases), fmt: (v) => brl.format(v) },
+  { id: "avg_ticket", label: "Ticket médio", emoji: "💳", value: (t) => div(t.purchase_value, t.purchases), fmt: (v) => brl.format(v) },
+  { id: "add_to_cart", label: "Adições ao carrinho", emoji: "🛍️", value: (t) => t.add_to_cart, fmt: (v) => int.format(v) },
+  { id: "checkouts", label: "Finalizações de compra iniciadas", emoji: "📦", value: (t) => t.checkouts, fmt: (v) => int.format(v) },
   { id: "conversations", label: "Conversas iniciadas", emoji: "💬", value: (t) => t.conversations, fmt: (v) => int.format(v) },
   { id: "cost_per_conversation", label: "Custo por conversa", emoji: "🏷️", value: (t) => div(t.spend, t.conversations), fmt: (v) => brl.format(v) },
   { id: "reach", label: "Alcance", emoji: "👥", value: (t) => t.reach, fmt: (v) => `${int.format(v)} pessoas` },
@@ -39,7 +46,7 @@ export const DEFAULTS: Record<Objective, string[]> = {
   reconhecimento: ["spend", "reach", "impressions", "frequency"],
   trafego: ["spend", "link_clicks", "ctr", "cpc", "reach"],
   leads: ["spend", "leads", "cpl", "reach"],
-  vendas: ["spend", "link_clicks", "landing_page_views", "reach"],
+  vendas: ["spend", "purchases", "purchase_value", "roas", "cost_per_purchase"],
   misto: ["spend", "conversations", "cost_per_conversation", "reach", "impressions"],
   a_definir: ["spend", "conversations", "cost_per_conversation", "reach"],
 };

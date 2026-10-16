@@ -33,3 +33,12 @@ export function costDelta(now: number | null, prev: number | null) {
 export function todayLong() {
   return new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "numeric", month: "long" }).format(new Date());
 }
+
+const dec2 = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// ROAS: faturamento ÷ investimento, ex.: 4,52x
+export const roas = (v: number | null | undefined) => (v === null || v === undefined ? "—" : `${dec2.format(v)}x`);
+
+// Cliente de vendas = objetivo "Vendas" em Configurações. Não depende de haver compra no período:
+// algumas contas registram "compras" de outras origens (ex.: eventos do WhatsApp), o que confundiria o painel.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+export const isSalesClient = (objective: string, _purchases = 0) => objective === "vendas";

@@ -4,7 +4,8 @@ import type { AdAccount, AdStat, Alert, CampaignStat, ClientOverview, ClientRow,
 const base = (o: Partial<ClientOverview> & Pick<ClientOverview, "client_id" | "name">): ClientOverview => ({
   objective: "a_definir", monthly_budget: null, spend_yesterday: 0, spend_7d: 0, conversations_7d: 0,
   cost_per_conv_7d: null, cost_per_conv_prev_7d: null, cpm_7d: null, ctr_link_7d: null, freq_7d: null,
-  spend_month: 0, critical_open: 0, warning_open: 0, health: "green", last_synced_at: new Date().toISOString(), ...o,
+  spend_month: 0, critical_open: 0, warning_open: 0, health: "green", last_synced_at: new Date().toISOString(),
+  purchases_7d: 0, revenue_7d: 0, roas_7d: null, cost_per_purchase_7d: null, cost_per_purchase_prev_7d: null, roas_prev_7d: null, ...o,
 });
 
 export const overview: ClientOverview[] = [
@@ -13,6 +14,7 @@ export const overview: ClientOverview[] = [
   base({ client_id: "c3", name: "Dotto", spend_yesterday: 20.1, spend_7d: 139.8, conversations_7d: 23, cost_per_conv_7d: 6.08, cost_per_conv_prev_7d: 5.4, cpm_7d: 11.3, ctr_link_7d: 1.1, freq_7d: 2.9, spend_month: 284.0, warning_open: 0 }),
   base({ client_id: "c4", name: "Grill Camobi", spend_7d: 0, conversations_7d: 0, freq_7d: 1.28, spend_month: 61.5, critical_open: 2, health: "red" }),
   base({ client_id: "c5", name: "Ortobom", spend_yesterday: 8.5, spend_7d: 60.7, conversations_7d: 12, cost_per_conv_7d: 5.06, cost_per_conv_prev_7d: 4.7, cpm_7d: 7.9, ctr_link_7d: 0.8, freq_7d: 1.86, spend_month: 122.9 }),
+  base({ client_id: "c8", name: "Marcelo's Pastello", objective: "vendas", spend_yesterday: 41.3, spend_7d: 286.48, conversations_7d: 0, purchases_7d: 31, revenue_7d: 1487.6, roas_7d: 5.19, cost_per_purchase_7d: 9.24, cost_per_purchase_prev_7d: 10.1, roas_prev_7d: 4.6, freq_7d: 1.6, spend_month: 345.45 }),
   base({ client_id: "c6", name: "Rispoli", last_synced_at: null }),
   base({ client_id: "c7", name: "Rodomann", objective: "misto", last_synced_at: null }),
 ];
@@ -23,6 +25,7 @@ export const accounts: AdAccount[] = [
   { id: "act_3", client_id: "c3", name: "Dotto Auto Peças", account_status: 1, prepaid_balance: 250.93, spend_cap: null, amount_spent: null, last_synced_at: new Date().toISOString(), last_sync_error: null },
   { id: "act_4", client_id: "c4", name: "CA - Grill Camobi", account_status: 1, prepaid_balance: 0, spend_cap: null, amount_spent: null, last_synced_at: new Date().toISOString(), last_sync_error: null },
   { id: "act_5", client_id: "c5", name: "ORTOBOM URUGUAIANA", account_status: 1, prepaid_balance: 159.24, spend_cap: null, amount_spent: null, last_synced_at: new Date().toISOString(), last_sync_error: null },
+  { id: "act_8", client_id: "c8", name: "Marcelo's", account_status: 1, prepaid_balance: 580.49, spend_cap: 1493.46, amount_spent: 983.5, last_synced_at: new Date().toISOString(), last_sync_error: null },
   { id: "act_6", client_id: "c6", name: null, account_status: null, prepaid_balance: null, spend_cap: null, amount_spent: null, last_synced_at: null, last_sync_error: "Meta API (200): (#200) Ad account owner has NOT grant ads_management or ads_read permission" },
   { id: "act_7", client_id: "c7", name: null, account_status: null, prepaid_balance: null, spend_cap: null, amount_spent: null, last_synced_at: null, last_sync_error: "Meta API (200): (#200) Ad account owner has NOT grant ads_management or ads_read permission" },
 ];
@@ -41,22 +44,31 @@ export function daily(days: number, scale: number): DailyPoint[] {
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(t); d.setDate(t.getDate() - i);
     const w = 0.75 + 0.5 * Math.abs(Math.sin(i * 1.7));
-    out.push({ date: d.toISOString().slice(0, 10), spend: Math.round(31 * scale * w * 100) / 100, conversations: Math.round(3.4 * scale * w * (0.8 + 0.4 * Math.cos(i))) });
+    const purchases = Math.round(4.4 * scale * w * (0.8 + 0.4 * Math.sin(i)));
+    out.push({ date: d.toISOString().slice(0, 10), spend: Math.round(31 * scale * w * 100) / 100, conversations: Math.round(3.4 * scale * w * (0.8 + 0.4 * Math.cos(i))),
+      purchases, purchase_value: Math.round(purchases * 48.5 * 100) / 100 });
   }
   return out;
 }
 
-export const campaigns: CampaignStat[] = [
+const campaignsRaw = [
   { campaign_id: "1", name: "[CONV] Coluna — WhatsApp — Uruguaiana", objective: "OUTCOME_ENGAGEMENT", effective_status: "ACTIVE", daily_budget: 25, spend: 171.2, conversations: 19, impressions: 12100, link_clicks: 160, cost_per_conversation: 9.01, ctr: 1.32, cpm: 14.15 },
   { campaign_id: "2", name: "[CONV] Hérnia de disco — remarketing", objective: "OUTCOME_ENGAGEMENT", effective_status: "ACTIVE", daily_budget: 10, spend: 57.2, conversations: 6, impressions: 4100, link_clicks: 71, cost_per_conversation: 9.53, ctr: 1.73, cpm: 13.95 },
   { campaign_id: "3", name: "[REC] Institucional — agosto", objective: "OUTCOME_AWARENESS", effective_status: "PAUSED", daily_budget: null, spend: 0, conversations: 0, impressions: 0, link_clicks: 0, cost_per_conversation: null, ctr: null, cpm: null },
 ];
 
-export const ads: AdStat[] = [
-  { ad_id: "1", name: "Vídeo — dor lombar ao acordar", campaign_name: campaigns[0].name, effective_status: "ACTIVE", thumbnail_url: null, spend: 98.4, conversations: 13, impressions: 6900, link_clicks: 101, cost_per_conversation: 7.57, ctr: 1.46 },
-  { ad_id: "2", name: "Carrossel — 3 sinais de hérnia", campaign_name: campaigns[1].name, effective_status: "ACTIVE", thumbnail_url: null, spend: 57.2, conversations: 6, impressions: 4100, link_clicks: 71, cost_per_conversation: 9.53, ctr: 1.73 },
-  { ad_id: "3", name: "Imagem — avaliação gratuita", campaign_name: campaigns[0].name, effective_status: "ACTIVE", thumbnail_url: null, spend: 72.8, conversations: 6, impressions: 5200, link_clicks: 59, cost_per_conversation: 12.13, ctr: 1.13 },
+const adsRaw = [
+  { ad_id: "1", name: "Vídeo — dor lombar ao acordar", campaign_name: campaignsRaw[0].name, effective_status: "ACTIVE", thumbnail_url: null, spend: 98.4, conversations: 13, impressions: 6900, link_clicks: 101, cost_per_conversation: 7.57, ctr: 1.46 },
+  { ad_id: "2", name: "Carrossel — 3 sinais de hérnia", campaign_name: campaignsRaw[1].name, effective_status: "ACTIVE", thumbnail_url: null, spend: 57.2, conversations: 6, impressions: 4100, link_clicks: 71, cost_per_conversation: 9.53, ctr: 1.73 },
+  { ad_id: "3", name: "Imagem — avaliação gratuita", campaign_name: campaignsRaw[0].name, effective_status: "ACTIVE", thumbnail_url: null, spend: 72.8, conversations: 6, impressions: 5200, link_clicks: 59, cost_per_conversation: 12.13, ctr: 1.13 },
 ];
+
+const sale = (i: number, spend: number) => {
+  const purchases = [19, 12, 0][i] ?? 0, value = [992.4, 495.2, 0][i] ?? 0;
+  return { purchases, purchase_value: value, roas: spend ? Math.round((value / spend) * 100) / 100 : null, cost_per_purchase: purchases ? Math.round((spend / purchases) * 100) / 100 : null };
+};
+export const campaigns: CampaignStat[] = campaignsRaw.map((c, i) => ({ ...c, ...sale(i, c.spend) }));
+export const ads: AdStat[] = adsRaw.map((a, i) => ({ ...a, ...sale(i, a.spend) }));
 
 export const clients: ClientRow[] = overview.map((o) => ({
   id: o.client_id, name: o.name, objective: o.objective, monthly_budget: o.monthly_budget, active: true,
@@ -66,12 +78,13 @@ export const lastSync: SyncRun = { id: 9, started_at: now, finished_at: now, acc
 
 export function period(since: string, until: string, compare: boolean, campaignIds: string[] = []) {
   const t = { spend: 195.63, impressions: 29483, reach: 14946, frequency: 1.97, clicks: 312, link_clicks: 80,
-    conversations: 33, leads: 0, landing_page_views: 0, video_views: 8120, engagement: 9411 };
+    conversations: 33, leads: 0, landing_page_views: 0, video_views: 8120, engagement: 9411,
+    purchases: 31, purchase_value: 1487.6, add_to_cart: 77, checkouts: 52 };
   const p = { ...t, spend: 174.2, conversations: 27, reach: 13010, impressions: 26100, link_clicks: 71, frequency: 2.01 };
   return {
     since, until, days: 7, previous_range: compare ? { since, until } : null, fetched_at: new Date().toISOString(),
     multiple_accounts: false, campaigns: campaigns.filter((c) => campaignIds.includes(c.campaign_id)).map((c) => ({ id: c.campaign_id, name: c.name })), totals: t, previous_totals: compare ? p : null,
-    panel: { spend: 195.63, impressions: 29483, clicks: 312, link_clicks: 80, conversations: 33, leads: 0, video_views: 8120, days: 7 },
+    panel: { spend: 195.63, impressions: 29483, clicks: 312, link_clicks: 80, conversations: 33, leads: 0, video_views: 8120, purchases: 31, purchase_value: 1487.6, days: 7 },
     accounts: [{ id: "act_2", name: "clinica", current: t, previous: compare ? p : null,
       balance: { spend_cap: 2459.85, amount_spent: 2231.65, available: 228.2, display_string: "Saldo disponível (R$259,76 BRL)", display_value: 259.76 }, error: null }],
   };

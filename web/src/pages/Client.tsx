@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { getAccounts, getAdStats, getAlerts, getCampaignStats, getClientDaily, getOverview } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { clientBalance, syncError } from "../lib/balance";
-import { count, money, pct, timeAgo } from "../lib/format";
+import { count, isSalesClient, money, pct, roas, timeAgo } from "../lib/format";
 import { OBJECTIVE_LABEL, type AdStat } from "../lib/types";
 import { DailyChart } from "../components/DailyChart";
 import { Fuel } from "../components/Fuel";
@@ -18,11 +18,14 @@ const STATUS_LABEL: Record<string, string> = {
   DISAPPROVED: "Reprovado", WITH_ISSUES: "Com problema", PENDING_REVIEW: "Em análise", IN_PROCESS: "Processando",
 };
 
-// Melhores primeiro: quem gerou conversa, pelo menor custo; depois o restante pelo gasto
-function rankAds(ads: AdStat[]) {
-  const withConv = ads.filter((a) => a.conversations > 0).sort((a, b) => (a.cost_per_conversation ?? 0) - (b.cost_per_conversation ?? 0));
-  const without = ads.filter((a) => !a.conversations).sort((a, b) => b.spend - a.spend);
-  return [...withConv, ...without];
+// Melhores primeiro. Vendas: maior ROAS. Demais: menor custo por conversa. Sem resultado: pelo gasto.
+function rankAds(ads: AdStat[], sales: boolean) {
+  const hit = (a: AdStat) => (sales ? a.purchases > 0 : a.conversations > 0);
+  const withRes = ads.filter(hit).sort((a, b) => sales
+    ? (b.roas ?? 0) - (a.roas ?? 0)
+    : (a.cost_per_conversation ?? 0) - (b.cost_per_conversation ?? 0));
+  const without = ads.filter((a) => !hit(a)).sort((a, b) => b.spend - a.spend);
+  return [...withRes, ...without];
 }
 
 export function ClientPage() {
@@ -47,9 +50,12 @@ export function ClientPage() {
   const conv = d.reduce((s, p) => s + Number(p.conversations), 0);
   const imp = d.reduce((s, p) => s + Number(p.impressions ?? 0), 0);
   const clicks = d.reduce((s, p) => s + Number(p.link_clicks ?? 0), 0);
+  const purchases = d.reduce((s, p) => s + Number(p.purchases ?? 0), 0);
+  const revenue = d.reduce((s, p) => s + Number(p.purchase_value ?? 0), 0);
+  const sales = isSalesClient(o.objective, purchases);
   const myAlerts = (alerts.data ?? []).filter((a) => a.client_id === id);
-  const ranked = rankAds(ads.data ?? []);
-  const bestId = ranked.find((a) => a.conversations > 0)?.ad_id;
+  const ranked = rankAds(ads.data ?? [], sales);
+  const bestId = ranked.find((a) => (sales ? a.purchases > 0 : a.conversations > 0))?.ad_id;
 
   return (
     <>
@@ -86,19 +92,32 @@ export function ClientPage() {
       )}
 
       <section className="card">
-        <div className="kpis">
+        <div className={`kpis ${sales ? "six" : ""}`}>
           <div className="stat"><div className="stat-label">Gasto</div><div className="stat-value">{money(spend)}</div></div>
-          <div className="stat"><div className="stat-label">Conversas</div><div className="stat-value">{count(conv)}</div></div>
-          <div className="stat"><div className="stat-label">Custo por conversa</div><div className="stat-value">{money(conv ? spend / conv : null)}</div></div>
-          <div className="stat"><div className="stat-label">CTR do link</div><div className="stat-value">{pct(imp ? (clicks / imp) * 100 : null)}</div>
-            <div className="stat-note">CPM {money(imp ? (spend / imp) * 1000 : null)}</div></div>
+          {sales ? (
+            <>
+              <div className="stat"><div className="stat-label">Vendas (compras)</div><div className="stat-value">{count(purchases)}</div></div>
+              <div className="stat"><div className="stat-label">Faturamento</div><div className="stat-value">{money(revenue)}</div>
+                <div className="stat-note">ticket médio {money(purchases ? revenue / purchases : null)}</div></div>
+              <div className="stat"><div className="stat-label">ROAS</div><div className="stat-value">{roas(spend ? revenue / spend : null)}</div>
+                <div className="stat-note">faturamento ÷ gasto</div></div>
+              <div className="stat"><div className="stat-label">Custo por venda</div><div className="stat-value">{money(purchases ? spend / purchases : null)}</div></div>
+            </>
+          ) : (
+            <>
+              <div className="stat"><div className="stat-label">Conversas</div><div className="stat-value">{count(conv)}</div></div>
+              <div className="stat"><div className="stat-label">Custo por conversa</div><div className="stat-value">{money(conv ? spend / conv : null)}</div></div>
+              <div className="stat"><div className="stat-label">CTR do link</div><div className="stat-value">{pct(imp ? (clicks / imp) * 100 : null)}</div>
+                <div className="stat-note">CPM {money(imp ? (spend / imp) * 1000 : null)}</div></div>
+            </>
+          )}
           <div className="stat"><div className="stat-label">Saldo da conta</div>
             <div style={{ marginTop: 6, textAlign: "left" }}><Fuel balance={clientBalance(accounts.data ?? [], id)} spend7d={o.spend_7d} /></div></div>
         </div>
-        <div className="chart-box">{d.length > 0 && <DailyChart data={d} height={270} />}</div>
+        <div className="chart-box">{d.length > 0 && <DailyChart data={d} height={270} line={sales ? "purchases" : "conversations"} />}</div>
         <div className="legend">
           <span><i style={{ background: "var(--chart-spend)" }} />Gasto por dia</span>
-          <span><i style={{ background: "var(--chart-conv)" }} />Conversas por dia</span>
+          <span><i style={{ background: "var(--chart-conv)" }} />{sales ? "Compras por dia" : "Conversas por dia"}</span>
         </div>
       </section>
 
@@ -114,7 +133,9 @@ export function ClientPage() {
         <div className="card table-wrap">
           <table>
             <thead>
-              <tr><th>Campanha</th><th>Status</th><th className="hide-sm">Orçamento/dia</th><th>Gasto</th><th>Conversas</th><th>Custo/conversa</th><th className="hide-sm">CTR</th><th className="hide-sm">CPM</th></tr>
+              {sales
+                ? <tr><th>Campanha</th><th>Status</th><th className="hide-sm">Orçamento/dia</th><th>Gasto</th><th>Compras</th><th>Faturamento</th><th>ROAS</th><th className="hide-sm">Custo/venda</th></tr>
+                : <tr><th>Campanha</th><th>Status</th><th className="hide-sm">Orçamento/dia</th><th>Gasto</th><th>Conversas</th><th>Custo/conversa</th><th className="hide-sm">CTR</th><th className="hide-sm">CPM</th></tr>}
             </thead>
             <tbody>
               {(campaigns.data ?? []).map((c) => (
@@ -123,10 +144,21 @@ export function ClientPage() {
                   <td><span className={`status-tag ${c.effective_status}`}>{STATUS_LABEL[c.effective_status ?? ""] ?? c.effective_status}</span></td>
                   <td className="num hide-sm">{money(c.daily_budget)}</td>
                   <td className="num">{money(c.spend)}</td>
-                  <td className="num">{count(c.conversations)}</td>
-                  <td className="num">{money(c.cost_per_conversation)}</td>
-                  <td className="num hide-sm">{pct(c.ctr)}</td>
-                  <td className="num hide-sm">{money(c.cpm)}</td>
+                  {sales ? (
+                    <>
+                      <td className="num">{count(c.purchases)}</td>
+                      <td className="num">{money(c.purchase_value)}</td>
+                      <td className="num">{c.purchases ? roas(c.roas) : "—"}</td>
+                      <td className="num hide-sm">{money(c.cost_per_purchase)}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td className="num">{count(c.conversations)}</td>
+                      <td className="num">{money(c.cost_per_conversation)}</td>
+                      <td className="num hide-sm">{pct(c.ctr)}</td>
+                      <td className="num hide-sm">{money(c.cpm)}</td>
+                    </>
+                  )}
                 </tr>
               ))}
               {!campaigns.loading && (campaigns.data ?? []).length === 0 && (
@@ -138,7 +170,7 @@ export function ClientPage() {
       </section>
 
       <section className="section">
-        <div className="section-head"><h2>Criativos</h2><span className="hint">menor custo por conversa primeiro</span></div>
+        <div className="section-head"><h2>Criativos</h2><span className="hint">{sales ? "maior ROAS primeiro" : "menor custo por conversa primeiro"}</span></div>
         {ranked.length === 0 && !ads.loading && <div className="card empty">Nenhum anúncio com gasto neste período.</div>}
         <div className="ads">
           {ranked.map((a, i) => (
@@ -154,8 +186,17 @@ export function ClientPage() {
                 </div>
                 <div className="ad-nums">
                   <div>Gasto<b>{money(a.spend)}</b></div>
-                  <div>Conversas<b>{count(a.conversations)}</b></div>
-                  <div>Custo/conv.<b className={a.ad_id === bestId ? "best" : ""}>{money(a.cost_per_conversation)}</b></div>
+                  {sales ? (
+                    <>
+                      <div>Compras<b>{count(a.purchases)}</b></div>
+                      <div>ROAS<b className={a.ad_id === bestId ? "best" : ""}>{a.purchases ? roas(a.roas) : "—"}</b></div>
+                    </>
+                  ) : (
+                    <>
+                      <div>Conversas<b>{count(a.conversations)}</b></div>
+                      <div>Custo/conv.<b className={a.ad_id === bestId ? "best" : ""}>{money(a.cost_per_conversation)}</b></div>
+                    </>
+                  )}
                 </div>
               </div>
             </article>

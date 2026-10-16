@@ -37,6 +37,8 @@ export function Reconcile({ clientId, accountIds, since, until }: { clientId: st
     { label: "Cliques no link", meta: t.link_clicks, panel: p.link_clicks, fmt: count },
     { label: "Conversas iniciadas", meta: t.conversations, panel: p.conversations, fmt: count },
     { label: "Leads", meta: t.leads, panel: p.leads, fmt: count },
+    { label: "Compras", meta: t.purchases ?? 0, panel: p.purchases ?? 0, fmt: count },
+    { label: "Faturamento", meta: t.purchase_value ?? 0, panel: p.purchase_value ?? 0, fmt: money },
   ] : [];
   const same = (r: Row) => Math.abs(r.meta - r.panel) < 0.005;
   const allOk = rows.length > 0 && rows.every(same);

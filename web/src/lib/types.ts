@@ -31,6 +31,12 @@ export interface ClientOverview {
   warning_open: number;
   health: Health;
   last_synced_at: string | null;
+  purchases_7d: number;
+  revenue_7d: number;
+  roas_7d: number | null;
+  cost_per_purchase_7d: number | null;
+  cost_per_purchase_prev_7d: number | null;
+  roas_prev_7d: number | null;
 }
 
 export interface AdAccount {
@@ -64,6 +70,8 @@ export interface DailyPoint {
   conversations: number;
   impressions?: number;
   link_clicks?: number;
+  purchases?: number;
+  purchase_value?: number;
 }
 
 export interface CampaignStat {
@@ -79,6 +87,10 @@ export interface CampaignStat {
   cost_per_conversation: number | null;
   ctr: number | null;
   cpm: number | null;
+  purchases: number;
+  purchase_value: number;
+  roas: number | null;
+  cost_per_purchase: number | null;
 }
 
 export interface AdStat {
@@ -93,6 +105,10 @@ export interface AdStat {
   link_clicks: number;
   cost_per_conversation: number | null;
   ctr: number | null;
+  purchases: number;
+  purchase_value: number;
+  roas: number | null;
+  cost_per_purchase: number | null;
 }
 
 export interface ClientRow {

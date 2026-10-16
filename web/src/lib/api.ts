@@ -52,17 +52,17 @@ export async function getPortfolioDaily(days: number): Promise<DailyPoint[]> {
 
 export async function getClientDaily(clientId: string, days: number): Promise<DailyPoint[]> {
   if (DEMO) return demo.daily(days, 1);
-  return nums<DailyPoint>(check(await supabase.rpc("client_daily", { p_client: clientId, p_days: days })));
+  return nums<DailyPoint>(check(await supabase.rpc("client_daily_v2", { p_client: clientId, p_days: days })));
 }
 
 export async function getCampaignStats(clientId: string, days: number): Promise<CampaignStat[]> {
   if (DEMO) return demo.campaigns;
-  return nums<CampaignStat>(check(await supabase.rpc("campaign_stats", { p_client: clientId, p_days: days })));
+  return nums<CampaignStat>(check(await supabase.rpc("campaign_stats_v2", { p_client: clientId, p_days: days })));
 }
 
 export async function getAdStats(clientId: string, days: number): Promise<AdStat[]> {
   if (DEMO) return demo.ads;
-  return nums<AdStat>(check(await supabase.rpc("ad_stats", { p_client: clientId, p_days: days })));
+  return nums<AdStat>(check(await supabase.rpc("ad_stats_v2", { p_client: clientId, p_days: days })));
 }
 
 export async function getClients(): Promise<ClientRow[]> {

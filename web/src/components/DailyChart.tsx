@@ -2,7 +2,8 @@ import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, 
 import type { DailyPoint } from "../lib/types";
 import { count, dayLabel, money } from "../lib/format";
 
-export function DailyChart({ data, height = 280, compact = false }: { data: DailyPoint[]; height?: number; compact?: boolean }) {
+export function DailyChart({ data, height = 280, compact = false, line = "conversations" }: { data: DailyPoint[]; height?: number; compact?: boolean; line?: "conversations" | "purchases" }) {
+  const lineLabel = line === "purchases" ? "Compras" : "Conversas";
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={data} margin={{ top: 6, right: compact ? 4 : 8, bottom: 0, left: compact ? 4 : 0 }}>
@@ -17,10 +18,10 @@ export function DailyChart({ data, height = 280, compact = false }: { data: Dail
           cursor={{ fill: "var(--surface-2)" }}
           contentStyle={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, fontSize: 13 }}
           labelFormatter={(l) => dayLabel(String(l))}
-          formatter={(v: number, n) => (n === "spend" ? [money(v), "Gasto"] : [count(v), "Conversas"])}
+          formatter={(v: number, n) => (n === "spend" ? [money(v), "Gasto"] : [count(v), lineLabel])}
         />
         <Bar yAxisId="s" dataKey="spend" fill="var(--chart-spend)" radius={[3, 3, 0, 0]} maxBarSize={22} />
-        <Line yAxisId="c" dataKey="conversations" stroke="var(--chart-conv)" strokeWidth={2.5} dot={false} type="linear" />
+        <Line yAxisId="c" dataKey={line} stroke="var(--chart-conv)" strokeWidth={2.5} dot={false} type="linear" />
       </ComposedChart>
     </ResponsiveContainer>
   );

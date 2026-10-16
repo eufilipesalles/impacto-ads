@@ -39,6 +39,11 @@ const ACTION_LEADS = ["lead", "onsite_conversion.lead_grouped"];
 const ACTION_VIDEO = "video_view";
 const ACTION_LPV = "landing_page_view";
 const ACTION_ENGAGEMENT = "post_engagement";
+// Compras: "omni_purchase" é a coluna "Compras" do Gerenciador (site + app + loja); os outros são equivalentes
+// em contas mais antigas. Pega o maior, nunca soma (são a mesma compra contada em visões diferentes).
+const ACTION_PURCHASE = ["omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase", "onsite_web_purchase"];
+const ACTION_ADD_TO_CART = ["omni_add_to_cart", "add_to_cart", "offsite_conversion.fb_pixel_add_to_cart"];
+const ACTION_CHECKOUT = ["omni_initiated_checkout", "initiate_checkout", "offsite_conversion.fb_pixel_initiate_checkout"];
 
 type Json = Record<string, unknown>;
 type Action = { action_type: string; value: string };
@@ -136,10 +141,11 @@ function accountBalance(acc: Json) {
   };
 }
 
-const INSIGHT_FIELDS = "spend,impressions,reach,clicks,inline_link_clicks,actions,date_start";
+const INSIGHT_FIELDS = "spend,impressions,reach,clicks,inline_link_clicks,actions,action_values,date_start";
 
 function insightRow(level: string, objectId: string, accountId: string, r: Json): Json {
   const actions = r.actions as Action[] | undefined;
+  const values = r.action_values as Action[] | undefined;
   return {
     level,
     object_id: objectId,
@@ -154,7 +160,12 @@ function insightRow(level: string, objectId: string, accountId: string, r: Json)
     conversations: actionVal(actions, ACTION_CONVERSATION),
     leads: actionVal(actions, ACTION_LEADS),
     video_views: actionVal(actions, ACTION_VIDEO),
+    purchases: actionVal(actions, ACTION_PURCHASE),
+    purchase_value: actionVal(values, ACTION_PURCHASE),
+    add_to_cart: actionVal(actions, ACTION_ADD_TO_CART),
+    checkouts: actionVal(actions, ACTION_CHECKOUT),
     actions: actions ?? null,
+    action_values: values ?? null,
     synced_at: new Date().toISOString(),
   };
 }
@@ -241,10 +252,11 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
 
 // ---------------- totais de um período, ao vivo no Meta ----------------
 const PERIOD_FIELDS =
-  "spend,impressions,reach,frequency,clicks,inline_link_clicks,inline_link_click_ctr,cpm,cost_per_inline_link_click,actions";
+  "spend,impressions,reach,frequency,clicks,inline_link_clicks,inline_link_click_ctr,cpm,cost_per_inline_link_click,actions,action_values";
 
 function periodTotals(r: Json) {
   const actions = r.actions as Action[] | undefined;
+  const values = r.action_values as Action[] | undefined;
   return {
     spend: num(r.spend),
     impressions: num(r.impressions),
@@ -257,6 +269,10 @@ function periodTotals(r: Json) {
     landing_page_views: actionVal(actions, ACTION_LPV),
     video_views: actionVal(actions, ACTION_VIDEO),
     engagement: actionVal(actions, ACTION_ENGAGEMENT),
+    purchases: actionVal(actions, ACTION_PURCHASE),
+    purchase_value: actionVal(values, ACTION_PURCHASE),
+    add_to_cart: actionVal(actions, ACTION_ADD_TO_CART),
+    checkouts: actionVal(actions, ACTION_CHECKOUT),
   };
 }
 type Totals = ReturnType<typeof periodTotals>;
@@ -325,7 +341,7 @@ async function period(sb: SupabaseClient, body: Json) {
   const stored: Json[] = [];
   for (let from = 0; ; from += 1000) {
     let sq = sb.from("insights_daily")
-      .select("ad_account_id, spend, impressions, clicks, link_clicks, conversations, leads, video_views, date")
+      .select("ad_account_id, spend, impressions, clicks, link_clicks, conversations, leads, video_views, purchases, purchase_value, date")
       .gte("date", since).lte("date", until);
     sq = campaigns.length
       ? sq.eq("level", "campaign").in("object_id", campaigns.map((c) => c.id))
@@ -335,12 +351,13 @@ async function period(sb: SupabaseClient, body: Json) {
     stored.push(...(page ?? []));
     if (!page || page.length < 1000) break;
   }
-  const panel = { spend: 0, impressions: 0, clicks: 0, link_clicks: 0, conversations: 0, leads: 0, video_views: 0, days: 0 };
+  const panel = { spend: 0, impressions: 0, clicks: 0, link_clicks: 0, conversations: 0, leads: 0, video_views: 0, purchases: 0, purchase_value: 0, days: 0 };
   const days = new Set<string>();
   for (const r of stored) {
     panel.spend += num(r.spend); panel.impressions += num(r.impressions); panel.clicks += num(r.clicks);
     panel.link_clicks += num(r.link_clicks); panel.conversations += num(r.conversations);
-    panel.leads += num(r.leads); panel.video_views += num(r.video_views); days.add(r.date as string);
+    panel.leads += num(r.leads); panel.video_views += num(r.video_views);
+    panel.purchases += num(r.purchases); panel.purchase_value += num(r.purchase_value); days.add(r.date as string);
   }
   panel.days = days.size;
 
