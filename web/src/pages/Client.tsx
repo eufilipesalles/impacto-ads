@@ -8,6 +8,8 @@ import { OBJECTIVE_LABEL, type AdStat } from "../lib/types";
 import { DailyChart } from "../components/DailyChart";
 import { Fuel } from "../components/Fuel";
 import { DEMO } from "../lib/supabase";
+import { Reconcile } from "../components/Reconcile";
+import { addDays, brToday } from "../lib/period";
 
 const PERIODS = [7, 14, 30, 90];
 
@@ -61,10 +63,13 @@ export function ClientPage() {
               : <>Atualizado {timeAgo(o.last_synced_at)}{o.monthly_budget ? ` · verba do mês ${money(o.spend_month)} de ${money(o.monthly_budget)}` : ""}</>}
           </p>
         </div>
-        <div className="seg" role="group" aria-label="Período">
-          {PERIODS.map((p) => (
-            <button key={p} className={p === days ? "on" : ""} onClick={() => setDays(p)} aria-pressed={p === days}>{p}d</button>
-          ))}
+        <div className="head-actions">
+          <div className="seg" role="group" aria-label="Período">
+            {PERIODS.map((p) => (
+              <button key={p} className={p === days ? "on" : ""} onClick={() => setDays(p)} aria-pressed={p === days}>{p}d</button>
+            ))}
+          </div>
+          <Link className="btn primary" to={`/relatorios?cliente=${id}${DEMO ? "&demo" : ""}`}>Gerar relatório</Link>
         </div>
       </header>
 
@@ -96,6 +101,13 @@ export function ClientPage() {
           <span><i style={{ background: "var(--chart-conv)" }} />Conversas por dia</span>
         </div>
       </section>
+
+      {!err && accs.length > 0 && (
+        <div className="section">
+          <Reconcile key={`${id}-${days}`} clientId={id} accountIds={accs.map((a) => a.id)}
+            since={addDays(brToday(), -days)} until={addDays(brToday(), -1)} />
+        </div>
+      )}
 
       <section className="section">
         <div className="section-head"><h2>Campanhas</h2><span className="hint">últimos {days} dias</span></div>

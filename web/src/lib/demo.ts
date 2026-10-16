@@ -63,3 +63,16 @@ export const clients: ClientRow[] = overview.map((o) => ({
 }));
 
 export const lastSync: SyncRun = { id: 9, started_at: now, finished_at: now, accounts_ok: 5, accounts_err: 5 };
+
+export function period(since: string, until: string, compare: boolean) {
+  const t = { spend: 195.63, impressions: 29483, reach: 14946, frequency: 1.97, clicks: 312, link_clicks: 80,
+    conversations: 33, leads: 0, landing_page_views: 0, video_views: 8120, engagement: 9411 };
+  const p = { ...t, spend: 174.2, conversations: 27, reach: 13010, impressions: 26100, link_clicks: 71, frequency: 2.01 };
+  return {
+    since, until, days: 7, previous_range: compare ? { since, until } : null, fetched_at: new Date().toISOString(),
+    multiple_accounts: false, totals: t, previous_totals: compare ? p : null,
+    panel: { spend: 195.63, impressions: 29483, clicks: 312, link_clicks: 80, conversations: 33, leads: 0, video_views: 8120, days: 7 },
+    accounts: [{ id: "act_2", name: "clinica", current: t, previous: compare ? p : null,
+      balance: { spend_cap: 2459.85, amount_spent: 2231.65, available: 228.2, display_string: "Saldo disponível (R$259,76 BRL)", display_value: 259.76 }, error: null }],
+  };
+}

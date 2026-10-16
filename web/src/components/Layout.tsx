@@ -21,6 +21,7 @@ export function Layout({ email }: { email: string }) {
   const links = [
     { to: `/${q}`, label: "Hoje", end: true },
     { to: `/clientes${q}`, label: "Clientes" },
+    { to: `/relatorios${q}`, label: "Relatórios" },
     { to: `/alertas${q}`, label: "Alertas", badge: critical },
     { to: `/configuracoes${q}`, label: "Configurações" },
   ];

@@ -1,11 +1,16 @@
 // Impacto Ads — meta-sync
-// Coleta dados das contas de anúncio no Meta, grava no banco e avalia os alertas.
+// 1) action "sync"   (padrão): coleta as contas no Meta, grava no banco e avalia os alertas.
+// 3) action "balances": atualiza só saldo e status das contas (leve; roda de hora em hora).
+// 2) action "period": totais de um período consultados AO VIVO no Meta (mesma base do Gerenciador
+//    de Anúncios), com o saldo da conta no momento e os totais gravados no painel para conferência.
 //
 // Chamadas aceitas:
 //   - pg_cron, com header x-cron-secret (segredo guardado no Vault do banco)
-//   - painel (usuário logado), com header Authorization: Bearer <jwt do usuário>
-// Corpo (opcional): { "days": 3, "account_id": "act_123" }
-//   days = quantos dias para trás buscar (padrão 3; use 90 na primeira carga)
+//   - painel (usuário da equipe logado), com header Authorization: Bearer <jwt>
+//
+// sync:   { "days": 3, "account_id": "act_123" }
+//         Contas que nunca tiveram a carga completa recebem 90 dias automaticamente.
+// period: { "action": "period", "client_id": "...", "since": "2026-10-06", "until": "2026-10-12", "compare": true }
 //
 // Segredos: META_ACCESS_TOKEN (obrigatório), META_APP_SECRET (recomendado),
 //           META_API_VERSION (opcional), ALERT_WEBHOOK_URL (opcional)
@@ -23,10 +28,16 @@ const TOKEN = SWAPPED ? RAW_SECRET : RAW_TOKEN;
 const APP_SECRET = SWAPPED ? RAW_TOKEN : RAW_SECRET;
 const ALERT_WEBHOOK_URL = Deno.env.get("ALERT_WEBHOOK_URL") ?? "";
 const CONCURRENCY = 3;
+const FULL_HISTORY_DAYS = 90;
+
+// Mesma atribuição configurada nos conjuntos de anúncios = mesmo número do Gerenciador de Anúncios
+const ATTRIBUTION = { use_unified_attribution_setting: "true" };
 
 const ACTION_CONVERSATION = "onsite_conversion.messaging_conversation_started_7d";
 const ACTION_LEADS = ["lead", "onsite_conversion.lead_grouped"];
 const ACTION_VIDEO = "video_view";
+const ACTION_LPV = "landing_page_view";
+const ACTION_ENGAGEMENT = "post_engagement";
 
 type Json = Record<string, unknown>;
 type Action = { action_type: string; value: string };
@@ -93,12 +104,35 @@ function brDate(offsetDays: number) {
   d.setUTCDate(d.getUTCDate() + offsetDays);
   return ymd(d);
 }
+function addDays(iso: string, n: number) {
+  const d = new Date(`${iso}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return ymd(d);
+}
+const daysBetween = (a: string, b: string) =>
+  Math.round((new Date(`${b}T12:00:00Z`).getTime() - new Date(`${a}T12:00:00Z`).getTime()) / 86400000) + 1;
 
 async function upsert(sb: SupabaseClient, table: string, rows: Json[], onConflict: string) {
   for (let i = 0; i < rows.length; i += 500) {
     const { error } = await sb.from(table).upsert(rows.slice(i, i + 500), { onConflict });
     if (error) throw new Error(`${table}: ${error.message}`);
   }
+}
+
+// Saldo disponível de conta pré-paga: total depositado (spend_cap) − total gasto (amount_spent).
+// O texto "Saldo disponível" do Meta (funding_source_details) é guardado à parte para conferência.
+function accountBalance(acc: Json) {
+  const cap = cents(acc.spend_cap), spent = cents(acc.amount_spent);
+  const display = (acc.funding_source_details as Json | undefined)?.display_string as string | undefined;
+  const m = display?.match(/R\$\s*([0-9.,]+)/);
+  const displayValue = m ? Number(m[1].replace(/\./g, "").replace(",", ".")) : null;
+  return {
+    spend_cap: cap,
+    amount_spent: spent,
+    available: cap && cap > 0 && spent !== null ? Math.max(cap - spent, 0) : null,
+    display_string: display ?? null,
+    display_value: displayValue,
+  };
 }
 
 const INSIGHT_FIELDS = "spend,impressions,reach,clicks,inline_link_clicks,actions,date_start";
@@ -132,7 +166,7 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
   const acc = await graph(act, {
     fields: "name,currency,timezone_name,account_status,disable_reason,amount_spent,spend_cap,balance,funding_source_details",
   });
-  const freq = await graph(`${act}/insights`, { level: "account", date_preset: "last_7d", fields: "frequency,reach" });
+  const freq = await graph(`${act}/insights`, { level: "account", date_preset: "last_7d", fields: "frequency,reach", ...ATTRIBUTION });
   const f = ((freq.data as Json[]) ?? [])[0] ?? {};
 
   // 2) Campanhas e anúncios (exceto arquivados/excluídos)
@@ -147,7 +181,7 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
   });
 
   // 3) Métricas diárias nos três níveis
-  const base = { time_range: timeRange, time_increment: "1" };
+  const base = { time_range: timeRange, time_increment: "1", ...ATTRIBUTION };
   const [accIns, campIns, adIns] = await Promise.all([
     graphAll(`${act}/insights`, { ...base, level: "account", fields: INSIGHT_FIELDS }),
     graphAll(`${act}/insights`, { ...base, level: "campaign", fields: `campaign_id,${INSIGHT_FIELDS}` }),
@@ -155,19 +189,21 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
   ]);
 
   // 4) Gravação
+  const bal = accountBalance(acc);
   const { error: accErr } = await sb.from("ad_accounts").update({
     name: acc.name,
     currency: acc.currency,
     timezone_name: acc.timezone_name,
     account_status: acc.account_status,
     disable_reason: acc.disable_reason,
-    amount_spent: cents(acc.amount_spent),
-    spend_cap: cents(acc.spend_cap),
+    amount_spent: bal.amount_spent,
+    spend_cap: bal.spend_cap,
     balance: cents(acc.balance),
-    funding_display: (acc.funding_source_details as Json | undefined)?.display_string ?? null,
+    funding_display: bal.display_string,
     freq_7d: f.frequency ? Number(f.frequency) : null,
     reach_7d: f.reach ? Number(f.reach) : null,
     last_synced_at: new Date().toISOString(),
+    balance_updated_at: new Date().toISOString(),
     last_sync_error: null,
   }).eq("id", act);
   if (accErr) throw new Error(`ad_accounts: ${accErr.message}`);
@@ -187,13 +223,138 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     thumbnail_url: (a.creative as Json | undefined)?.thumbnail_url ?? null, updated_at: now,
   })), "id");
 
+  // Dias sem nenhuma linha no Meta = dias sem veiculação: zera o que estiver gravado,
+  // para não sobrar número antigo no painel
+  const { error: delErr } = await sb.from("insights_daily").delete()
+    .eq("ad_account_id", act).gte("date", since).lte("date", until);
+  if (delErr) throw new Error(`insights_daily: ${delErr.message}`);
+
   await upsert(sb, "insights_daily", [
     ...accIns.map((r) => insightRow("account", act, act, r)),
     ...campIns.map((r) => insightRow("campaign", r.campaign_id as string, act, r)),
     ...adIns.map((r) => insightRow("ad", r.ad_id as string, act, r)),
   ], "level,object_id,date");
 
-  return { campaigns: campaigns.length, ads: ads.length, days: accIns.length };
+  return { campaigns: campaigns.length, ads: ads.length, days: accIns.length, since, until };
+}
+
+// ---------------- totais de um período, ao vivo no Meta ----------------
+const PERIOD_FIELDS =
+  "spend,impressions,reach,frequency,clicks,inline_link_clicks,inline_link_click_ctr,cpm,cost_per_inline_link_click,actions";
+
+function periodTotals(r: Json) {
+  const actions = r.actions as Action[] | undefined;
+  return {
+    spend: num(r.spend),
+    impressions: num(r.impressions),
+    reach: num(r.reach),
+    frequency: num(r.frequency),
+    clicks: num(r.clicks),
+    link_clicks: num(r.inline_link_clicks),
+    conversations: actionVal(actions, ACTION_CONVERSATION),
+    leads: actionVal(actions, ACTION_LEADS),
+    landing_page_views: actionVal(actions, ACTION_LPV),
+    video_views: actionVal(actions, ACTION_VIDEO),
+    engagement: actionVal(actions, ACTION_ENGAGEMENT),
+  };
+}
+type Totals = ReturnType<typeof periodTotals>;
+const ZERO: Totals = periodTotals({});
+
+async function accountPeriod(act: string, since: string, until: string, apiDefault = false): Promise<Totals> {
+  const res = await graph(`${act}/insights`, {
+    level: "account", time_range: JSON.stringify({ since, until }), fields: PERIOD_FIELDS, ...(apiDefault ? {} : ATTRIBUTION),
+  });
+  const row = ((res.data as Json[]) ?? [])[0];
+  return row ? periodTotals(row) : { ...ZERO };
+}
+
+function sumTotals(list: Totals[]): Totals {
+  const t = { ...ZERO };
+  for (const x of list) for (const k of Object.keys(t) as (keyof Totals)[]) t[k] += x[k];
+  // frequência de várias contas = impressões ÷ alcance somado (aproximação; com 1 conta é exata)
+  t.frequency = list.length === 1 ? list[0].frequency : t.reach ? t.impressions / t.reach : 0;
+  return t;
+}
+
+async function period(sb: SupabaseClient, body: Json) {
+  const clientId = String(body.client_id ?? "");
+  const since = String(body.since ?? ""), until = String(body.until ?? "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(since) || !/^\d{4}-\d{2}-\d{2}$/.test(until) || since > until) {
+    return { status: 400, body: { error: "Período inválido. Use datas no formato AAAA-MM-DD." } };
+  }
+  const { data: accs, error } = await sb.from("ad_accounts").select("id, name").eq("client_id", clientId);
+  if (error) return { status: 500, body: { error: error.message } };
+  if (!accs?.length) return { status: 404, body: { error: "Cliente sem conta de anúncios cadastrada." } };
+
+  const n = daysBetween(since, until);
+  const prevUntil = addDays(since, -1), prevSince = addDays(since, -n);
+
+  const accounts = [];
+  for (const a of accs) {
+    try {
+      const [current, previous, acc] = await Promise.all([
+        accountPeriod(a.id, since, until, body.attribution === "api_default"),
+        body.compare ? accountPeriod(a.id, prevSince, prevUntil, body.attribution === "api_default") : Promise.resolve(null),
+        graph(a.id, { fields: "name,amount_spent,spend_cap,funding_source_details" }),
+      ]);
+      accounts.push({ id: a.id, name: (acc.name as string) ?? a.name, current, previous, balance: accountBalance(acc), error: null });
+    } catch (e) {
+      accounts.push({ id: a.id, name: a.name, current: null, previous: null, balance: null, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  // Totais gravados no painel no mesmo período (para a conferência)
+  const { data: stored } = await sb.from("insights_daily")
+    .select("ad_account_id, spend, impressions, clicks, link_clicks, conversations, leads, video_views, date")
+    .eq("level", "account").in("ad_account_id", accs.map((a) => a.id)).gte("date", since).lte("date", until);
+  const panel = { spend: 0, impressions: 0, clicks: 0, link_clicks: 0, conversations: 0, leads: 0, video_views: 0, days: 0 };
+  const days = new Set<string>();
+  for (const r of stored ?? []) {
+    panel.spend += num(r.spend); panel.impressions += num(r.impressions); panel.clicks += num(r.clicks);
+    panel.link_clicks += num(r.link_clicks); panel.conversations += num(r.conversations);
+    panel.leads += num(r.leads); panel.video_views += num(r.video_views); days.add(r.date as string);
+  }
+  panel.days = days.size;
+
+  const ok = accounts.filter((a) => a.current) as { current: Totals; previous: Totals | null }[];
+  return {
+    status: 200,
+    body: {
+      since, until, days: n,
+      previous_range: body.compare ? { since: prevSince, until: prevUntil } : null,
+      fetched_at: new Date().toISOString(),
+      attribution: "configuração de atribuição de cada conjunto de anúncios (igual ao Gerenciador)",
+      multiple_accounts: accs.length > 1,
+      totals: ok.length ? sumTotals(ok.map((a) => a.current)) : null,
+      previous_totals: body.compare && ok.length ? sumTotals(ok.map((a) => a.previous ?? { ...ZERO })) : null,
+      panel,
+      accounts,
+    },
+  };
+}
+
+// ---------------- saldo e status, leve ----------------
+async function refreshBalances(sb: SupabaseClient) {
+  const { data: accs } = await sb.from("ad_accounts").select("id, clients!inner(active)").eq("clients.active", true);
+  let ok = 0;
+  const errors: Json[] = [];
+  for (const a of accs ?? []) {
+    try {
+      const acc = await graph(a.id, { fields: "account_status,disable_reason,amount_spent,spend_cap,funding_source_details" });
+      const bal = accountBalance(acc);
+      await sb.from("ad_accounts").update({
+        account_status: acc.account_status, disable_reason: acc.disable_reason,
+        amount_spent: bal.amount_spent, spend_cap: bal.spend_cap, funding_display: bal.display_string,
+        balance_updated_at: new Date().toISOString(),
+      }).eq("id", a.id);
+      ok++;
+    } catch (e) {
+      errors.push({ account: a.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  await sb.rpc("evaluate_alerts");
+  return { ok, errors };
 }
 
 // ---------------- envio de alertas novos ----------------
@@ -227,7 +388,7 @@ Deno.serve(async (req) => {
     auth: { persistSession: false },
   });
 
-  // Autorização: cron (segredo) ou usuário logado no painel
+  // Autorização: cron (segredo) ou usuário da equipe logado no painel
   let trigger = "cron";
   const cronHeader = req.headers.get("x-cron-secret");
   const { data: cronOk } = cronHeader
@@ -244,20 +405,27 @@ Deno.serve(async (req) => {
   }
   if (!TOKEN) return reply({ error: "META_ACCESS_TOKEN não configurado" }, 500);
   if (!TOKEN.startsWith("EAA")) {
-    // diagnóstico sem expor o valor
-    return reply({
-      error: "META_ACCESS_TOKEN não tem formato de token do Meta (deveria começar com EAA)",
-      token_length: TOKEN.length,
-      app_secret_looks_like_token: APP_SECRET.startsWith("EAA"),
-    }, 500);
+    return reply({ error: "META_ACCESS_TOKEN não tem formato de token do Meta (deveria começar com EAA)" }, 500);
   }
 
   const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
-  const days = Math.min(Math.max(Number(body.days) || 3, 1), 90);
-  const since = brDate(-days);
+
+  if (body.action === "period") {
+    try {
+      const r = await period(sb, body);
+      return reply(r.body, r.status);
+    } catch (e) {
+      return reply({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
+  }
+
+  if (body.action === "balances") return reply(await refreshBalances(sb));
+
+  // ----- sync -----
+  const days = Math.min(Math.max(Number(body.days) || 3, 1), FULL_HISTORY_DAYS);
   const until = brDate(0);
 
-  let q = sb.from("ad_accounts").select("id, clients!inner(active)").eq("clients.active", true);
+  let q = sb.from("ad_accounts").select("id, history_loaded_at, clients!inner(active)").eq("clients.active", true);
   if (body.account_id) q = q.eq("id", body.account_id);
   const { data: accounts, error } = await q;
   if (error) return reply({ error: error.message }, 500);
@@ -269,8 +437,12 @@ Deno.serve(async (req) => {
   const queue = [...(accounts ?? [])];
   await Promise.all(Array.from({ length: CONCURRENCY }, async () => {
     for (let a = queue.shift(); a; a = queue.shift()) {
+      // Conta sem histórico completo (nova ou liberada depois) recebe a carga de 90 dias
+      const full = !a.history_loaded_at;
+      const since = brDate(-(full ? FULL_HISTORY_DAYS : days));
       try {
-        results.push({ account: a.id, ...(await syncAccount(sb, a.id, since, until)) });
+        results.push({ account: a.id, full_history: full, ...(await syncAccount(sb, a.id, since, until)) });
+        if (full) await sb.from("ad_accounts").update({ history_loaded_at: new Date().toISOString() }).eq("id", a.id);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         errors.push({ account: a.id, error: msg });
@@ -293,5 +465,5 @@ Deno.serve(async (req) => {
     errors: errors.length ? errors : null,
   }).eq("id", run?.id);
 
-  return reply({ since, until, secrets_swapped: SWAPPED, results, errors, alerts_active: alertsOpened, notified });
+  return reply({ until, secrets_swapped: SWAPPED, results, errors, alerts_active: alertsOpened, notified });
 });

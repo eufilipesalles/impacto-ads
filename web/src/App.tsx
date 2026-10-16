@@ -11,6 +11,7 @@ import { AlertsPage } from "./pages/Alerts";
 import { SettingsPage } from "./pages/Settings";
 import { ClientsPage } from "./pages/Clients";
 import { AccountPage } from "./pages/Account";
+import { ReportsPage } from "./pages/Reports";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(DEMO ? null : undefined);
@@ -48,6 +49,7 @@ export default function App() {
           <Route index element={<Today />} />
           <Route path="cliente/:id" element={<ClientPage />} />
           <Route path="clientes" element={<ClientsPage />} />
+          <Route path="relatorios" element={<ReportsPage />} />
           <Route path="alertas" element={<AlertsPage />} />
           <Route path="configuracoes" element={<SettingsPage />} />
           <Route path="conta" element={<AccountPage email={email} />} />

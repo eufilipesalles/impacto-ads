@@ -43,6 +43,7 @@ export interface AdAccount {
   amount_spent: number | null;
   last_synced_at: string | null;
   last_sync_error: string | null;
+  balance_updated_at?: string | null;
 }
 
 export interface Alert {

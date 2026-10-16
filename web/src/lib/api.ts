@@ -1,5 +1,6 @@
 import { DEMO, FUNCTIONS_URL, supabase } from "./supabase";
 import * as demo from "./demo";
+import type { PeriodResult } from "./period";
 import type {
   AdAccount, AdStat, Alert, AlertRule, CampaignStat, ClientOverview, ClientRow, DailyPoint, Objective, SyncRun,
 } from "./types";
@@ -29,7 +30,7 @@ export async function getOverview(): Promise<ClientOverview[]> {
 export async function getAccounts(): Promise<AdAccount[]> {
   if (DEMO) return demo.accounts;
   return nums<AdAccount>(check(await supabase.from("ad_accounts").select(
-    "id, client_id, name, account_status, prepaid_balance, spend_cap, amount_spent, last_synced_at, last_sync_error")));
+    "id, client_id, name, account_status, prepaid_balance, spend_cap, amount_spent, last_synced_at, last_sync_error, balance_updated_at")));
 }
 
 export async function getAlerts(status: "open" | "resolved"): Promise<Alert[]> {
@@ -165,4 +166,18 @@ export async function isTeamMember(): Promise<boolean> {
   if (DEMO) return true;
   const { data } = await supabase.rpc("is_team_member");
   return data === true;
+}
+
+// Totais de um período consultados ao vivo no Meta (mesma base do Gerenciador de Anúncios)
+export async function getPeriod(clientId: string, since: string, until: string, compare = false): Promise<PeriodResult> {
+  if (DEMO) { await new Promise((r) => setTimeout(r, 600)); return demo.period(since, until, compare); }
+  const { data: s } = await supabase.auth.getSession();
+  const res = await fetch(`${FUNCTIONS_URL}/meta-sync`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${s.session?.access_token ?? ""}` },
+    body: JSON.stringify({ action: "period", client_id: clientId, since, until, compare }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `Falha ao consultar o Meta (${res.status})`);
+  return body as PeriodResult;
 }
