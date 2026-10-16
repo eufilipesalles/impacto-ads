@@ -47,6 +47,7 @@ export const DEFAULTS: Record<Objective, string[]> = {
 export interface ReportOptions {
   clientName: string;
   title: string;
+  campaignNames?: string[];
   since: string;
   until: string;
   metrics: string[];
@@ -69,6 +70,10 @@ export function buildMessage(o: ReportOptions): string {
   const lines: string[] = [];
   lines.push(`*${o.title} | ${o.clientName}*`);
   lines.push(`${o.emojis ? "📅 " : ""}${brDate(o.since)} a ${brDate(o.until, true)}`);
+  if (o.campaignNames?.length) {
+    const label = o.campaignNames.length === 1 ? "Campanha" : "Campanhas";
+    lines.push(`${o.emojis ? "📣 " : ""}${label}: ${o.campaignNames.join(", ")}`);
+  }
   lines.push("");
   for (const id of o.metrics) {
     const m = METRICS.find((x) => x.id === id);

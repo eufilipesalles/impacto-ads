@@ -169,15 +169,63 @@ export async function isTeamMember(): Promise<boolean> {
 }
 
 // Totais de um período consultados ao vivo no Meta (mesma base do Gerenciador de Anúncios)
-export async function getPeriod(clientId: string, since: string, until: string, compare = false): Promise<PeriodResult> {
-  if (DEMO) { await new Promise((r) => setTimeout(r, 600)); return demo.period(since, until, compare); }
+export async function getPeriod(clientId: string, since: string, until: string, compare = false, campaignIds: string[] = []): Promise<PeriodResult> {
+  if (DEMO) { await new Promise((r) => setTimeout(r, 600)); return demo.period(since, until, compare, campaignIds); }
   const { data: s } = await supabase.auth.getSession();
   const res = await fetch(`${FUNCTIONS_URL}/meta-sync`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${s.session?.access_token ?? ""}` },
-    body: JSON.stringify({ action: "period", client_id: clientId, since, until, compare }),
+    body: JSON.stringify({ action: "period", client_id: clientId, since, until, compare, campaign_ids: campaignIds }),
   });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error ?? `Falha ao consultar o Meta (${res.status})`);
   return body as PeriodResult;
+}
+
+// ---------- Campanhas do cliente (para o filtro do relatório) ----------
+export interface CampaignOption { id: string; name: string | null; effective_status: string | null; ad_account_id: string }
+
+export async function getClientCampaigns(clientId: string): Promise<CampaignOption[]> {
+  if (DEMO) return demo.campaigns.map((c) => ({ id: c.campaign_id, name: c.name, effective_status: c.effective_status, ad_account_id: "act_2" }));
+  const data = check(await supabase.from("campaigns")
+    .select("id, name, effective_status, ad_account_id, ad_accounts!inner(client_id)")
+    .eq("ad_accounts.client_id", clientId).order("name")) as unknown as CampaignOption[];
+  const rank = (s: string | null) => (s === "ACTIVE" ? 0 : 1);
+  return data.map(({ id, name, effective_status, ad_account_id }) => ({ id, name, effective_status, ad_account_id }))
+    .sort((a, b) => rank(a.effective_status) - rank(b.effective_status) || (a.name ?? "").localeCompare(b.name ?? ""));
+}
+
+// ---------- Histórico de relatórios ----------
+export interface SavedReport {
+  id: string; client_id: string; since: string; until: string;
+  campaign_ids: string[]; campaign_names: string[]; metrics: string[]; title: string; message: string;
+  totals: import("./period").Totals; previous_totals: import("./period").Totals | null;
+  options: { compare?: boolean; emojis?: boolean; note?: string };
+  fetched_at: string; created_by: string | null; created_at: string; updated_at: string;
+}
+const DEMO_REPORTS: SavedReport[] = [];
+
+export async function getReports(clientId?: string): Promise<SavedReport[]> {
+  if (DEMO) return DEMO_REPORTS.filter((r) => !clientId || r.client_id === clientId);
+  let q = supabase.from("reports").select("*").order("created_at", { ascending: false }).limit(100);
+  if (clientId) q = q.eq("client_id", clientId);
+  return check(await q) as SavedReport[];
+}
+
+// Grava (ou atualiza, se já tiver id) o relatório no histórico
+export async function saveReport(r: Omit<SavedReport, "id" | "created_at" | "updated_at" | "created_by">, id?: string | null): Promise<string> {
+  if (DEMO) {
+    const now = new Date().toISOString();
+    if (id) { const i = DEMO_REPORTS.findIndex((x) => x.id === id); if (i >= 0) DEMO_REPORTS[i] = { ...DEMO_REPORTS[i], ...r, updated_at: now }; return id; }
+    const nid = `demo-${DEMO_REPORTS.length + 1}`;
+    DEMO_REPORTS.unshift({ ...r, id: nid, created_at: now, updated_at: now, created_by: "demonstração" });
+    return nid;
+  }
+  if (id) {
+    check(await supabase.from("reports").update(r).eq("id", id));
+    return id;
+  }
+  const { data: u } = await supabase.auth.getUser();
+  const row = check(await supabase.from("reports").insert({ ...r, created_by: u.user?.email ?? null }).select("id").single()) as { id: string };
+  return row.id;
 }

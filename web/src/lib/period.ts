@@ -15,6 +15,7 @@ export interface PeriodResult {
   previous_range: { since: string; until: string } | null;
   fetched_at: string;
   multiple_accounts: boolean;
+  campaigns?: { id: string; name: string | null }[];
   totals: Totals | null;
   previous_totals: Totals | null;
   panel: { spend: number; impressions: number; clicks: number; link_clicks: number; conversations: number; leads: number; video_views: number; days: number };

@@ -10,7 +10,8 @@
 //
 // sync:   { "days": 3, "account_id": "act_123" }
 //         Contas que nunca tiveram a carga completa recebem 90 dias automaticamente.
-// period: { "action": "period", "client_id": "...", "since": "2026-10-06", "until": "2026-10-12", "compare": true }
+// period: { "action": "period", "client_id": "...", "since": "2026-10-06", "until": "2026-10-12", "compare": true,
+//           "campaign_ids": ["120..."] }   ← opcional: só essas campanhas (filtro feito pelo próprio Meta)
 //
 // Segredos: META_ACCESS_TOKEN (obrigatório), META_APP_SECRET (recomendado),
 //           META_API_VERSION (opcional), ALERT_WEBHOOK_URL (opcional)
@@ -261,9 +262,11 @@ function periodTotals(r: Json) {
 type Totals = ReturnType<typeof periodTotals>;
 const ZERO: Totals = periodTotals({});
 
-async function accountPeriod(act: string, since: string, until: string, apiDefault = false): Promise<Totals> {
+async function accountPeriod(act: string, since: string, until: string, apiDefault = false, campaignIds: string[] = []): Promise<Totals> {
   const res = await graph(`${act}/insights`, {
     level: "account", time_range: JSON.stringify({ since, until }), fields: PERIOD_FIELDS, ...(apiDefault ? {} : ATTRIBUTION),
+    // O Meta soma só as campanhas escolhidas e já entrega o alcance sem repetir pessoas entre elas
+    ...(campaignIds.length ? { filtering: JSON.stringify([{ field: "campaign.id", operator: "IN", value: campaignIds }]) } : {}),
   });
   const row = ((res.data as Json[]) ?? [])[0];
   return row ? periodTotals(row) : { ...ZERO };
@@ -283,9 +286,22 @@ async function period(sb: SupabaseClient, body: Json) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(since) || !/^\d{4}-\d{2}-\d{2}$/.test(until) || since > until) {
     return { status: 400, body: { error: "Período inválido. Use datas no formato AAAA-MM-DD." } };
   }
-  const { data: accs, error } = await sb.from("ad_accounts").select("id, name").eq("client_id", clientId);
+  const { data: allAccs, error } = await sb.from("ad_accounts").select("id, name").eq("client_id", clientId);
   if (error) return { status: 500, body: { error: error.message } };
-  if (!accs?.length) return { status: 404, body: { error: "Cliente sem conta de anúncios cadastrada." } };
+  if (!allAccs?.length) return { status: 404, body: { error: "Cliente sem conta de anúncios cadastrada." } };
+
+  // Filtro por campanha: só campanhas deste cliente; cada conta recebe as campanhas dela
+  const wanted = Array.isArray(body.campaign_ids) ? (body.campaign_ids as unknown[]).map(String).filter(Boolean) : [];
+  const byAccount = new Map<string, string[]>();
+  let campaigns: { id: string; name: string | null }[] = [];
+  if (wanted.length) {
+    const { data: cps } = await sb.from("campaigns").select("id, name, ad_account_id")
+      .in("id", wanted).in("ad_account_id", allAccs.map((a) => a.id));
+    if (!cps?.length) return { status: 400, body: { error: "Nenhuma das campanhas escolhidas pertence a este cliente." } };
+    for (const c of cps) byAccount.set(c.ad_account_id, [...(byAccount.get(c.ad_account_id) ?? []), c.id]);
+    campaigns = cps.map((c) => ({ id: c.id, name: c.name }));
+  }
+  const accs = wanted.length ? allAccs.filter((a) => byAccount.has(a.id)) : allAccs;
 
   const n = daysBetween(since, until);
   const prevUntil = addDays(since, -1), prevSince = addDays(since, -n);
@@ -294,8 +310,8 @@ async function period(sb: SupabaseClient, body: Json) {
   for (const a of accs) {
     try {
       const [current, previous, acc] = await Promise.all([
-        accountPeriod(a.id, since, until, body.attribution === "api_default"),
-        body.compare ? accountPeriod(a.id, prevSince, prevUntil, body.attribution === "api_default") : Promise.resolve(null),
+        accountPeriod(a.id, since, until, body.attribution === "api_default", byAccount.get(a.id) ?? []),
+        body.compare ? accountPeriod(a.id, prevSince, prevUntil, body.attribution === "api_default", byAccount.get(a.id) ?? []) : Promise.resolve(null),
         graph(a.id, { fields: "name,amount_spent,spend_cap,funding_source_details" }),
       ]);
       accounts.push({ id: a.id, name: (acc.name as string) ?? a.name, current, previous, balance: accountBalance(acc), error: null });
@@ -305,12 +321,23 @@ async function period(sb: SupabaseClient, body: Json) {
   }
 
   // Totais gravados no painel no mesmo período (para a conferência)
-  const { data: stored } = await sb.from("insights_daily")
-    .select("ad_account_id, spend, impressions, clicks, link_clicks, conversations, leads, video_views, date")
-    .eq("level", "account").in("ad_account_id", accs.map((a) => a.id)).gte("date", since).lte("date", until);
+  // Lê em páginas de 1000 linhas (limite por consulta do banco)
+  const stored: Json[] = [];
+  for (let from = 0; ; from += 1000) {
+    let sq = sb.from("insights_daily")
+      .select("ad_account_id, spend, impressions, clicks, link_clicks, conversations, leads, video_views, date")
+      .gte("date", since).lte("date", until);
+    sq = campaigns.length
+      ? sq.eq("level", "campaign").in("object_id", campaigns.map((c) => c.id))
+      : sq.eq("level", "account").in("ad_account_id", accs.map((a) => a.id));
+    const { data: page, error: pErr } = await sq.order("date").order("object_id").range(from, from + 999);
+    if (pErr) throw new Error(`insights_daily: ${pErr.message}`);
+    stored.push(...(page ?? []));
+    if (!page || page.length < 1000) break;
+  }
   const panel = { spend: 0, impressions: 0, clicks: 0, link_clicks: 0, conversations: 0, leads: 0, video_views: 0, days: 0 };
   const days = new Set<string>();
-  for (const r of stored ?? []) {
+  for (const r of stored) {
     panel.spend += num(r.spend); panel.impressions += num(r.impressions); panel.clicks += num(r.clicks);
     panel.link_clicks += num(r.link_clicks); panel.conversations += num(r.conversations);
     panel.leads += num(r.leads); panel.video_views += num(r.video_views); days.add(r.date as string);
@@ -326,6 +353,7 @@ async function period(sb: SupabaseClient, body: Json) {
       fetched_at: new Date().toISOString(),
       attribution: "configuração de atribuição de cada conjunto de anúncios (igual ao Gerenciador)",
       multiple_accounts: accs.length > 1,
+      campaigns,
       totals: ok.length ? sumTotals(ok.map((a) => a.current)) : null,
       previous_totals: body.compare && ok.length ? sumTotals(ok.map((a) => a.previous ?? { ...ZERO })) : null,
       panel,

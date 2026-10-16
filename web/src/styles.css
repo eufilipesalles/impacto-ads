@@ -314,3 +314,11 @@ tr.inactive td { opacity: 0.6; }
 @media (max-width: 760px) {
   .metric-list { grid-template-columns: 1fr; }
 }
+
+/* ---------- Relatórios: campanhas e histórico ---------- */
+.camp-list { display: grid; gap: 6px; max-height: 260px; overflow-y: auto; margin-top: 6px; padding-right: 2px; }
+.camp-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.camp-status { font: 500 10.5px/1 var(--mono); text-transform: uppercase; color: var(--muted); background: var(--surface-2); padding: 3px 5px; border-radius: 4px; flex: none; }
+.camp-status.on { color: var(--ok); background: var(--ok-bg); }
+.link-btn { background: none; border: 0; padding: 0; color: var(--muted); text-decoration: underline; cursor: pointer; font-size: 13px; justify-self: start; margin-top: 4px; }
+.row-current td { background: var(--orange-soft); }
