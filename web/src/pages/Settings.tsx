@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { getClients, getRules, saveClient, saveCostCeiling } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { OBJECTIVE_LABEL, type ClientRow, type Objective } from "../lib/types";
@@ -102,7 +103,7 @@ export function SettingsPage() {
           </tbody>
         </table>
       </div>
-      <p className="sub" style={{ marginTop: 14 }}>Os alertas são recalculados na próxima coleta (6h e 12h) ou quando você clica em “Atualizar agora”.</p>
+      <p className="sub" style={{ marginTop: 14 }}>Os alertas são recalculados na próxima coleta (6h e 12h) ou quando você clica em “Atualizar agora”. · <Link to="/conta">Alterar minha senha</Link></p>
     </>
   );
 }

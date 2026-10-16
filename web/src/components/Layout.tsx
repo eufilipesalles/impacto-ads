@@ -39,6 +39,7 @@ export function Layout({ email }: { email: string }) {
         </nav>
         <div className="side-foot">
           <span>{email}</span>
+          <NavLink to={`/conta${q}`} style={{ color: "#b5b1ac" }}>Alterar senha</NavLink>
           {!DEMO && <button onClick={() => supabase.auth.signOut()}>Sair</button>}
         </div>
       </aside>
