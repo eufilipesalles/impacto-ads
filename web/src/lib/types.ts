@@ -70,6 +70,7 @@ export interface DailyPoint {
   conversations: number;
   impressions?: number;
   link_clicks?: number;
+  leads?: number;
   purchases?: number;
   purchase_value?: number;
 }
@@ -134,4 +135,72 @@ export interface SyncRun {
   finished_at: string | null;
   accounts_ok: number;
   accounts_err: number;
+}
+
+// Um criativo (anúncio) agregado no período — função creative_stats_v2
+export interface CreativeStat {
+  ad_id: string;
+  client_id: string;
+  client_name: string;
+  client_objective: Objective;
+  ad_account_id: string;
+  name: string | null;
+  campaign_name: string | null;
+  campaign_objective: string | null;
+  effective_status: string | null;
+  format: string | null;
+  thumbnail_url: string | null;
+  image_url: string | null;
+  preview_url: string | null;
+  post_url: string | null;
+  body: string | null;
+  title: string | null;
+  cta_type: string | null;
+  created_time: string | null;
+  quality_ranking: string | null;
+  engagement_ranking: string | null;
+  conversion_ranking: string | null;
+  freq_7d: number | null;
+  days_active: number;
+  first_day: string | null;
+  last_day: string | null;
+  spend: number;
+  impressions: number;
+  reach_sum: number;
+  clicks: number;
+  link_clicks: number;
+  conversations: number;
+  leads: number;
+  purchases: number;
+  purchase_value: number;
+  video_3s: number;
+  video_plays: number;
+  thruplays: number;
+  video_p25: number;
+  video_p50: number;
+  video_p75: number;
+  video_p95: number;
+  video_p100: number;
+  video_avg_time: number | null;
+  reactions: number;
+  comments: number;
+  shares: number;
+  saves: number;
+  imp_recent: number;
+  clicks_recent: number;
+  imp_before: number;
+  clicks_before: number;
+}
+
+export interface CreativeDay {
+  date: string;
+  spend: number;
+  impressions: number;
+  link_clicks: number;
+  conversations: number;
+  leads: number;
+  purchases: number;
+  purchase_value: number;
+  video_3s: number;
+  thruplays: number;
 }

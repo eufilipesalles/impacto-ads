@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getAccounts, getAdStats, getAlerts, getCampaignStats, getClientDaily, getOverview } from "../lib/api";
+import { getAccounts, getAlerts, getCampaignStats, getClientDaily, getCreatives, getOverview } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { clientBalance, syncError } from "../lib/balance";
 import { count, isSalesClient, money, pct, roas, timeAgo } from "../lib/format";
-import { OBJECTIVE_LABEL, type AdStat } from "../lib/types";
+import { OBJECTIVE_LABEL } from "../lib/types";
+import { scoreCreatives } from "../lib/creative";
+import { CreativeCard, CreativeDrawer } from "../components/Creatives";
 import { DailyChart } from "../components/DailyChart";
 import { Fuel } from "../components/Fuel";
 import { DEMO } from "../lib/supabase";
@@ -18,16 +20,6 @@ const STATUS_LABEL: Record<string, string> = {
   DISAPPROVED: "Reprovado", WITH_ISSUES: "Com problema", PENDING_REVIEW: "Em análise", IN_PROCESS: "Processando",
 };
 
-// Melhores primeiro. Vendas: maior ROAS. Demais: menor custo por conversa. Sem resultado: pelo gasto.
-function rankAds(ads: AdStat[], sales: boolean) {
-  const hit = (a: AdStat) => (sales ? a.purchases > 0 : a.conversations > 0);
-  const withRes = ads.filter(hit).sort((a, b) => sales
-    ? (b.roas ?? 0) - (a.roas ?? 0)
-    : (a.cost_per_conversation ?? 0) - (b.cost_per_conversation ?? 0));
-  const without = ads.filter((a) => !hit(a)).sort((a, b) => b.spend - a.spend);
-  return [...withRes, ...without];
-}
-
 export function ClientPage() {
   const { id = "" } = useParams();
   const q = DEMO ? "?demo" : "";
@@ -37,7 +29,9 @@ export function ClientPage() {
   const alerts = useAsync(() => getAlerts("open"), []);
   const daily = useAsync(() => getClientDaily(id, days), [id, days]);
   const campaigns = useAsync(() => getCampaignStats(id, days), [id, days]);
-  const ads = useAsync(() => getAdStats(id, days), [id, days]);
+  const creatives = useAsync(() => getCreatives(id, days), [id, days]);
+  const scored = useMemo(() => scoreCreatives(creatives.data ?? []), [creatives.data]);
+  const [openAd, setOpenAd] = useState<string | null>(null);
 
   const o = overview.data?.find((c) => c.client_id === id);
   if (overview.loading) return <div className="loading">Carregando…</div>;
@@ -54,8 +48,8 @@ export function ClientPage() {
   const revenue = d.reduce((s, p) => s + Number(p.purchase_value ?? 0), 0);
   const sales = isSalesClient(o.objective, purchases);
   const myAlerts = (alerts.data ?? []).filter((a) => a.client_id === id);
-  const ranked = rankAds(ads.data ?? [], sales);
-  const bestId = ranked.find((a) => (sales ? a.purchases > 0 : a.conversations > 0))?.ad_id;
+  const ranked = [...scored].sort((a, b) => Number(a.verdict === "teste") - Number(b.verdict === "teste") || b.score - a.score);
+  const openCreative = scored.find((c) => c.ad_id === openAd) ?? null;
 
   return (
     <>
@@ -170,39 +164,21 @@ export function ClientPage() {
       </section>
 
       <section className="section">
-        <div className="section-head"><h2>Criativos</h2><span className="hint">{sales ? "maior ROAS primeiro" : "menor custo por conversa primeiro"}</span></div>
-        {ranked.length === 0 && !ads.loading && <div className="card empty">Nenhum anúncio com gasto neste período.</div>}
-        <div className="ads">
-          {ranked.map((a, i) => (
-            <article key={a.ad_id ?? i} className="card ad">
-              <div className="ad-thumb">
-                {a.thumbnail_url ? <img src={a.thumbnail_url} alt="" loading="lazy" /> : <span>sem prévia</span>}
-                <span className="ad-rank">#{i + 1}</span>
-              </div>
-              <div className="ad-body">
-                <div>
-                  <div className="ad-name">{a.name ?? "Anúncio sem nome"}</div>
-                  <div className="ad-camp">{a.campaign_name}</div>
-                </div>
-                <div className="ad-nums">
-                  <div>Gasto<b>{money(a.spend)}</b></div>
-                  {sales ? (
-                    <>
-                      <div>Compras<b>{count(a.purchases)}</b></div>
-                      <div>ROAS<b className={a.ad_id === bestId ? "best" : ""}>{a.purchases ? roas(a.roas) : "—"}</b></div>
-                    </>
-                  ) : (
-                    <>
-                      <div>Conversas<b>{count(a.conversations)}</b></div>
-                      <div>Custo/conv.<b className={a.ad_id === bestId ? "best" : ""}>{money(a.cost_per_conversation)}</b></div>
-                    </>
-                  )}
-                </div>
-              </div>
-            </article>
-          ))}
+        <div className="section-head">
+          <h2>Criativos</h2>
+          <Link className="hint" to={`/criativos?cliente=${id}${days !== 30 ? `&dias=${days}` : ""}${DEMO ? "&demo" : ""}`}>análise completa →</Link>
         </div>
+        {ranked.length === 0 && !creatives.loading && <div className="card empty">Nenhum anúncio com gasto neste período.</div>}
+        <div className="cr-grid">
+          {ranked.slice(0, 6).map((c) => <CreativeCard key={c.ad_id} c={c} showClient={false} onOpen={() => setOpenAd(c.ad_id)} />)}
+        </div>
+        {ranked.length > 6 && (
+          <p className="help" style={{ marginTop: 10 }}>
+            Mostrando os 6 melhores de {ranked.length}. <Link to={`/criativos?cliente=${id}${DEMO ? "&demo" : ""}`}>Ver todos</Link>
+          </p>
+        )}
       </section>
+      {openCreative && <CreativeDrawer c={openCreative} days={days} onClose={() => setOpenAd(null)} />}
     </>
   );
 }

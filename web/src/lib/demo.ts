@@ -1,5 +1,5 @@
 // Dados fictícios só para o modo demonstração (?demo). Não são usados em produção.
-import type { AdAccount, AdStat, Alert, CampaignStat, ClientOverview, ClientRow, DailyPoint, SyncRun } from "./types";
+import type { AdAccount, AdStat, Alert, CampaignStat, ClientOverview, ClientRow, CreativeDay, CreativeStat, DailyPoint, SyncRun } from "./types";
 
 const base = (o: Partial<ClientOverview> & Pick<ClientOverview, "client_id" | "name">): ClientOverview => ({
   objective: "a_definir", monthly_budget: null, spend_yesterday: 0, spend_7d: 0, conversations_7d: 0,
@@ -88,4 +88,71 @@ export function period(since: string, until: string, compare: boolean, campaignI
     accounts: [{ id: "act_2", name: "clinica", current: t, previous: compare ? p : null,
       balance: { spend_cap: 2459.85, amount_spent: 2231.65, available: 228.2, display_string: "Saldo disponível (R$259,76 BRL)", display_value: 259.76 }, error: null }],
   };
+}
+
+// ---------- Criativos (demonstração) ----------
+type C = Partial<CreativeStat> & Pick<CreativeStat, "ad_id" | "client_id" | "name" | "spend" | "impressions">;
+const cr = (o: C): CreativeStat => {
+  const ov = overview.find((x) => x.client_id === o.client_id)!;
+  const video = (o.format ?? "video") === "video";
+  const imp = o.impressions, plays = video ? Math.round(imp * 0.88) : 0;
+  const hook = o.video_3s ?? (video ? Math.round(imp * 0.18) : 0);
+  const thru = o.thruplays ?? (video ? Math.round(hook * 0.32) : 0);
+  return {
+    client_name: ov.name, client_objective: ov.objective, ad_account_id: "act_demo", campaign_name: "[CONV] Campanha principal",
+    campaign_objective: "OUTCOME_ENGAGEMENT", effective_status: "ACTIVE", format: "video", thumbnail_url: null, image_url: null,
+    preview_url: "https://www.facebook.com", post_url: null, body: null, title: null, cta_type: "WHATSAPP_MESSAGE",
+    created_time: null, quality_ranking: null, engagement_ranking: null, conversion_ranking: null, freq_7d: 1.6,
+    days_active: 14, first_day: null, last_day: null, reach_sum: Math.round(imp * 0.6), clicks: Math.round(imp * 0.02),
+    link_clicks: Math.round(imp * 0.006), conversations: 0, leads: 0, purchases: 0, purchase_value: 0,
+    video_3s: hook, video_plays: plays, thruplays: thru,
+    video_p25: Math.round(plays * 0.42), video_p50: Math.round(plays * 0.26), video_p75: Math.round(plays * 0.17),
+    video_p95: Math.round(plays * 0.11), video_p100: Math.round(plays * 0.09), video_avg_time: video ? 5.4 : null,
+    reactions: Math.round(imp * 0.006), comments: Math.round(imp * 0.0004), shares: Math.round(imp * 0.0005), saves: Math.round(imp * 0.0002),
+    imp_recent: Math.round(imp * 0.5), clicks_recent: Math.round(imp * 0.003), imp_before: Math.round(imp * 0.5), clicks_before: Math.round(imp * 0.003),
+    ...o,
+  };
+};
+
+const CREATIVES: CreativeStat[] = [
+  cr({ ad_id: "d1", client_id: "c2", name: "Vídeo — dor no ciático (depoimento)", spend: 362.9, impressions: 58814, conversations: 45, link_clicks: 150,
+    video_3s: 15920, thruplays: 6247, quality_ranking: "above_average", engagement_ranking: "above_average", conversion_ranking: "average", freq_7d: 1.87,
+    title: "Agende sua consulta", body: "Dor na coluna e no nervo ciático não são a mesma coisa. 👇\n\nO ciático dói da lombar até a perna, formiga e piora quando você fica muito tempo sentado.\n\nNa Clínica Flamboyant a avaliação mostra a origem da dor e o tratamento começa no mesmo dia.\n\n📲 Toque em Enviar mensagem e agende sua avaliação." }),
+  cr({ ad_id: "d2", client_id: "c2", name: "Vídeo — Pilates é evolução", spend: 295.9, impressions: 26137, conversations: 18, link_clicks: 122,
+    video_3s: 6165, thruplays: 1396, imp_recent: 9000, clicks_recent: 30, imp_before: 17000, clicks_before: 92, freq_7d: 2.4,
+    title: "Agende sua consulta", body: "🧘‍♀️ Não é só sobre exercício. É sobre evolução.\n\nO Pilates fortalece, alinha a postura e devolve a confiança no seu corpo." }),
+  cr({ ad_id: "d3", client_id: "c2", name: "Vídeo — tour pela clínica", spend: 181.9, impressions: 25481, conversations: 8, link_clicks: 49,
+    video_3s: 2683, thruplays: 1165, engagement_ranking: "below_average_35", body: "📍 No coração de Uruguaiana, um novo espaço para cuidar de você." }),
+  cr({ ad_id: "d4", client_id: "c2", name: "Vídeo — tendinite no cotovelo", spend: 46.2, impressions: 820, conversations: 2, link_clicks: 6 }),
+  cr({ ad_id: "d5", client_id: "c8", name: "Imagem — combo pastel + refri", format: "imagem", spend: 210.4, impressions: 31200, link_clicks: 402,
+    purchases: 52, purchase_value: 4890.5, cta_type: "ORDER_NOW", quality_ranking: "above_average", conversion_ranking: "above_average",
+    title: "Peça já o seu", body: "Pastel crocante, recheio de verdade. 🥟\nCombo pastel + refrigerante com entrega grátis hoje." }),
+  cr({ ad_id: "d6", client_id: "c8", name: "Vídeo — bastidores da cozinha", spend: 180.1, impressions: 24400, link_clicks: 170, purchases: 21,
+    purchase_value: 1630.2, cta_type: "ORDER_NOW", video_3s: 6100, thruplays: 1220, body: "Tudo feito na hora. Veja como nasce o seu pastel." }),
+  cr({ ad_id: "d7", client_id: "c8", name: "Vídeo — promoção de terça", spend: 140.6, impressions: 21000, link_clicks: 60, purchases: 6, purchase_value: 302.4,
+    cta_type: "ORDER_NOW", video_3s: 2200, thruplays: 480, quality_ranking: "below_average_20" }),
+  cr({ ad_id: "d8", client_id: "c3", name: "Vídeo — peça certa na primeira", spend: 312.0, impressions: 40100, conversations: 71, link_clicks: 98,
+    video_3s: 8020, thruplays: 1900, body: "Não sabe o código da peça? Manda a foto que a gente encontra. 🔧" }),
+  cr({ ad_id: "d9", client_id: "c3", name: "Carrossel — ofertas da semana", format: "carrossel", spend: 210.2, impressions: 30500, conversations: 30, link_clicks: 120 }),
+  cr({ ad_id: "d10", client_id: "c3", name: "Vídeo — entrega no mesmo dia", spend: 185.4, impressions: 26000, conversations: 23, link_clicks: 41,
+    video_3s: 4100, thruplays: 380, freq_7d: 3.9 }),
+];
+
+export function creatives(clientId: string | null): CreativeStat[] {
+  return CREATIVES.filter((c) => !clientId || c.client_id === clientId);
+}
+
+export function creativeDaily(adId: string, days: number): CreativeDay[] {
+  const c = CREATIVES.find((x) => x.ad_id === adId) ?? CREATIVES[0];
+  const out: CreativeDay[] = [];
+  const t = new Date(); t.setDate(t.getDate() - 1);
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(t); d.setDate(t.getDate() - i);
+    const on = i < c.days_active;
+    const w = on ? (0.7 + 0.6 * Math.abs(Math.sin(i * 1.3))) / c.days_active : 0;
+    out.push({ date: d.toISOString().slice(0, 10), spend: Math.round(c.spend * w * 100) / 100, impressions: Math.round(c.impressions * w),
+      link_clicks: Math.round(c.link_clicks * w), conversations: Math.round(c.conversations * w), leads: Math.round(c.leads * w), purchases: Math.round(c.purchases * w),
+      purchase_value: Math.round(c.purchase_value * w), video_3s: Math.round(c.video_3s * w), thruplays: Math.round(c.thruplays * w) });
+  }
+  return out;
 }

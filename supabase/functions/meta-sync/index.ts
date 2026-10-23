@@ -142,6 +142,10 @@ function accountBalance(acc: Json) {
 }
 
 const INSIGHT_FIELDS = "spend,impressions,reach,clicks,inline_link_clicks,actions,action_values,date_start";
+// Nível anúncio: atenção e retenção de vídeo (para a análise de criativos)
+const AD_VIDEO_FIELDS = "video_play_actions,video_thruplay_watched_actions,video_p25_watched_actions,video_p50_watched_actions," +
+  "video_p75_watched_actions,video_p95_watched_actions,video_p100_watched_actions,video_avg_time_watched_actions";
+const sumList = (v: unknown) => ((v as Action[] | undefined) ?? []).reduce((t, a) => t + num(a.value), 0);
 
 function insightRow(level: string, objectId: string, accountId: string, r: Json): Json {
   const actions = r.actions as Action[] | undefined;
@@ -164,9 +168,53 @@ function insightRow(level: string, objectId: string, accountId: string, r: Json)
     purchase_value: actionVal(values, ACTION_PURCHASE),
     add_to_cart: actionVal(actions, ACTION_ADD_TO_CART),
     checkouts: actionVal(actions, ACTION_CHECKOUT),
+    reactions: actionVal(actions, "post_reaction"),
+    comments: actionVal(actions, "comment"),
+    shares: actionVal(actions, "post"),
+    saves: actionVal(actions, "onsite_conversion.post_save"),
+    // Todas as linhas levam as mesmas colunas (gravação em lote); fora do nível anúncio ficam zeradas
+    video_plays: sumList(r.video_play_actions),
+    thruplays: sumList(r.video_thruplay_watched_actions),
+    video_p25: sumList(r.video_p25_watched_actions),
+    video_p50: sumList(r.video_p50_watched_actions),
+    video_p75: sumList(r.video_p75_watched_actions),
+    video_p95: sumList(r.video_p95_watched_actions),
+    video_p100: sumList(r.video_p100_watched_actions),
+    video_avg_time: r.video_avg_time_watched_actions ? sumList(r.video_avg_time_watched_actions) : null,
     actions: actions ?? null,
     action_values: values ?? null,
     synced_at: new Date().toISOString(),
+  };
+}
+
+// ---------------- conteúdo do criativo ----------------
+// Texto, título, chamada e formato vêm de lugares diferentes conforme o tipo de anúncio
+function creativeInfo(ad: Json) {
+  const cr = (ad.creative as Json | undefined) ?? {};
+  const story = (cr.object_story_spec as Json | undefined) ?? {};
+  const link = (story.link_data as Json | undefined) ?? {};
+  const video = (story.video_data as Json | undefined) ?? {};
+  const photo = (story.photo_data as Json | undefined) ?? {};
+  const feed = (cr.asset_feed_spec as Json | undefined) ?? {};
+  const first = (arr: unknown, key = "text") => (((arr as Json[] | undefined) ?? [])[0]?.[key] as string | undefined) ?? undefined;
+  const cta = (x: Json) => ((x.call_to_action as Json | undefined)?.type as string | undefined);
+
+  const body = (cr.body as string) || (link.message as string) || (video.message as string) || (photo.caption as string) || first(feed.bodies) || null;
+  const title = (cr.title as string) || (link.name as string) || (video.title as string) || first(feed.titles) || null;
+  const ctaType = (cr.call_to_action_type as string) || cta(link) || cta(video) || ((feed.call_to_action_types as string[] | undefined) ?? [])[0] || null;
+  const videoId = (cr.video_id as string) || (video.video_id as string) || first(feed.videos, "video_id") || null;
+  const format = (link.child_attachments as unknown[] | undefined)?.length ? "carrossel"
+    : videoId || cr.object_type === "VIDEO" ? "video"
+    : (feed.bodies || feed.images || feed.videos) ? "dinamico"
+    : "imagem";
+  const storyId = cr.effective_object_story_id as string | undefined;
+  return {
+    format, body, title, cta_type: ctaType, video_id: videoId,
+    image_url: (cr.image_url as string) || null,
+    thumbnail_url: (cr.thumbnail_url as string) || null,
+    preview_url: (ad.preview_shareable_link as string) || null,
+    post_url: (cr.instagram_permalink_url as string) || (storyId ? `https://www.facebook.com/${storyId}` : null),
+    created_time: (ad.created_time as string) || null,
   };
 }
 
@@ -188,7 +236,10 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     filtering: notArchived,
   });
   const ads = await graphAll(`${act}/ads`, {
-    fields: "id,name,status,effective_status,campaign_id,adset_id,issues_info,ad_review_feedback,creative{thumbnail_url}",
+    fields: "id,name,status,effective_status,campaign_id,adset_id,issues_info,ad_review_feedback,created_time,preview_shareable_link," +
+      "creative{id,object_type,body,title,thumbnail_url,image_url,video_id,call_to_action_type,object_story_spec,asset_feed_spec," +
+      "instagram_permalink_url,effective_object_story_id}",
+    thumbnail_width: "480", thumbnail_height: "480", limit: "100",
     filtering: notArchived,
   });
 
@@ -197,8 +248,16 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
   const [accIns, campIns, adIns] = await Promise.all([
     graphAll(`${act}/insights`, { ...base, level: "account", fields: INSIGHT_FIELDS }),
     graphAll(`${act}/insights`, { ...base, level: "campaign", fields: `campaign_id,${INSIGHT_FIELDS}` }),
-    graphAll(`${act}/insights`, { ...base, level: "ad", fields: `ad_id,campaign_id,${INSIGHT_FIELDS}` }),
+    graphAll(`${act}/insights`, { ...base, level: "ad", fields: `ad_id,campaign_id,${INSIGHT_FIELDS},${AD_VIDEO_FIELDS}` }),
   ]);
+
+  // Rankings de qualidade do Meta e frequência por anúncio (últimos 7 dias; só saem com 500+ impressões)
+  const ranks = await graphAll(`${act}/insights`, {
+    level: "ad", date_preset: "last_7d", ...ATTRIBUTION,
+    fields: "ad_id,frequency,quality_ranking,engagement_rate_ranking,conversion_rate_ranking",
+  }).catch(() => [] as Json[]);
+  const rankBy = new Map(ranks.map((r) => [r.ad_id as string, r]));
+  const rk = (v: unknown) => (typeof v === "string" && v !== "UNKNOWN" ? v.toLowerCase() : null);
 
   // 4) Gravação
   const bal = accountBalance(acc);
@@ -227,25 +286,31 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     lifetime_budget: cents(c.lifetime_budget), updated_at: now,
   })), "id");
 
-  await upsert(sb, "ads", ads.map((a) => ({
-    id: a.id, ad_account_id: act, campaign_id: a.campaign_id, adset_id: a.adset_id, name: a.name,
-    status: a.status, effective_status: a.effective_status,
-    issues: a.issues_info || a.ad_review_feedback
-      ? { issues_info: a.issues_info ?? null, review: a.ad_review_feedback ?? null } : null,
-    thumbnail_url: (a.creative as Json | undefined)?.thumbnail_url ?? null, updated_at: now,
-  })), "id");
+  await upsert(sb, "ads", ads.map((a) => {
+    const r = rankBy.get(a.id as string);
+    return {
+      id: a.id, ad_account_id: act, campaign_id: a.campaign_id, adset_id: a.adset_id, name: a.name,
+      status: a.status, effective_status: a.effective_status,
+      issues: a.issues_info || a.ad_review_feedback
+        ? { issues_info: a.issues_info ?? null, review: a.ad_review_feedback ?? null } : null,
+      ...creativeInfo(a),
+      quality_ranking: rk(r?.quality_ranking), engagement_ranking: rk(r?.engagement_rate_ranking),
+      conversion_ranking: rk(r?.conversion_rate_ranking), freq_7d: r?.frequency ? Number(r.frequency) : null,
+      rankings_updated_at: now, updated_at: now,
+    };
+  }), "id");
 
-  // Dias sem nenhuma linha no Meta = dias sem veiculação: zera o que estiver gravado,
-  // para não sobrar número antigo no painel
-  const { error: delErr } = await sb.from("insights_daily").delete()
-    .eq("ad_account_id", act).gte("date", since).lte("date", until);
-  if (delErr) throw new Error(`insights_daily: ${delErr.message}`);
-
+  // Grava primeiro; só depois remove o que o Meta não devolveu mais (dias/anúncios sem veiculação).
+  // Se a gravação falhar, os dados anteriores continuam no painel.
+  const stamp = new Date(Date.now() - 1000).toISOString();
   await upsert(sb, "insights_daily", [
     ...accIns.map((r) => insightRow("account", act, act, r)),
     ...campIns.map((r) => insightRow("campaign", r.campaign_id as string, act, r)),
     ...adIns.map((r) => insightRow("ad", r.ad_id as string, act, r)),
   ], "level,object_id,date");
+  const { error: delErr } = await sb.from("insights_daily").delete()
+    .eq("ad_account_id", act).gte("date", since).lte("date", until).lt("synced_at", stamp);
+  if (delErr) throw new Error(`insights_daily: ${delErr.message}`);
 
   return { campaigns: campaigns.length, ads: ads.length, days: accIns.length, since, until };
 }

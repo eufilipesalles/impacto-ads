@@ -2,7 +2,7 @@ import { DEMO, FUNCTIONS_URL, supabase } from "./supabase";
 import * as demo from "./demo";
 import type { PeriodResult } from "./period";
 import type {
-  AdAccount, AdStat, Alert, AlertRule, CampaignStat, ClientOverview, ClientRow, DailyPoint, Objective, SyncRun,
+  AdAccount, AdStat, Alert, AlertRule, CampaignStat, ClientOverview, ClientRow, CreativeDay, CreativeStat, DailyPoint, Objective, SyncRun,
 } from "./types";
 
 // PostgREST pode devolver numeric como texto: normaliza tudo que parece número
@@ -228,4 +228,15 @@ export async function saveReport(r: Omit<SavedReport, "id" | "created_at" | "upd
   const { data: u } = await supabase.auth.getUser();
   const row = check(await supabase.from("reports").insert({ ...r, created_by: u.user?.email ?? null }).select("id").single()) as { id: string };
   return row.id;
+}
+
+// ---------- Criativos ----------
+export async function getCreatives(clientId: string | null, days: number): Promise<CreativeStat[]> {
+  if (DEMO) return demo.creatives(clientId);
+  return nums<CreativeStat>(check(await supabase.rpc("creative_stats_v2", { p_client: clientId, p_days: days })));
+}
+
+export async function getCreativeDaily(adId: string, days: number): Promise<CreativeDay[]> {
+  if (DEMO) return demo.creativeDaily(adId, days);
+  return nums<CreativeDay>(check(await supabase.rpc("creative_daily_v2", { p_ad: adId, p_days: days })));
 }

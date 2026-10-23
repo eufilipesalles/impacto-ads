@@ -2,8 +2,8 @@ import { Bar, CartesianGrid, ComposedChart, Line, ResponsiveContainer, Tooltip, 
 import type { DailyPoint } from "../lib/types";
 import { count, dayLabel, money } from "../lib/format";
 
-export function DailyChart({ data, height = 280, compact = false, line = "conversations" }: { data: DailyPoint[]; height?: number; compact?: boolean; line?: "conversations" | "purchases" }) {
-  const lineLabel = line === "purchases" ? "Compras" : "Conversas";
+export function DailyChart({ data, height = 280, compact = false, line = "conversations" }: { data: DailyPoint[]; height?: number; compact?: boolean; line?: "conversations" | "purchases" | "leads" | "link_clicks" }) {
+  const lineLabel = { purchases: "Compras", conversations: "Conversas", leads: "Leads", link_clicks: "Cliques no link" }[line];
   return (
     <ResponsiveContainer width="100%" height={height}>
       <ComposedChart data={data} margin={{ top: 6, right: compact ? 4 : 8, bottom: 0, left: compact ? 4 : 0 }}>
