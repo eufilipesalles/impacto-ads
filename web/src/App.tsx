@@ -13,6 +13,8 @@ import { ClientsPage } from "./pages/Clients";
 import { AccountPage } from "./pages/Account";
 import { ReportsPage } from "./pages/Reports";
 import { CreativesPage } from "./pages/Creatives";
+import { AutopilotPage } from "./pages/Autopilot";
+import { MaterialsPage } from "./pages/Materials";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(DEMO ? null : undefined);
@@ -51,6 +53,8 @@ export default function App() {
           <Route path="cliente/:id" element={<ClientPage />} />
           <Route path="clientes" element={<ClientsPage />} />
           <Route path="criativos" element={<CreativesPage />} />
+          <Route path="materiais" element={<MaterialsPage />} />
+          <Route path="piloto" element={<AutopilotPage />} />
           <Route path="relatorios" element={<ReportsPage />} />
           <Route path="alertas" element={<AlertsPage />} />
           <Route path="configuracoes" element={<SettingsPage />} />

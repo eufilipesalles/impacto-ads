@@ -450,3 +450,66 @@ b.good, .part-top b.good { color: var(--ok); } b.bad, .part-top b.bad { color: v
   .dr-grid.four { grid-template-columns: 1fr 1fr; }
   .ranks { grid-template-columns: 1fr; }
 }
+
+/* ---------- Piloto automático ---------- */
+.btn.danger { background: var(--crit); border-color: var(--crit); color: #fff; font-weight: 600; }
+.btn.danger:hover { background: #b9271d; }
+.ap-state { font: 600 12px/1 var(--mono); text-transform: uppercase; letter-spacing: .06em; padding: 8px 10px; border-radius: 6px; }
+.ap-state.on { background: var(--ok-bg); color: var(--ok); }
+.ap-state.off { background: var(--crit-bg); color: var(--crit); }
+.ap-kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.ap-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.ap-card { padding: 16px 18px; display: grid; gap: 8px; align-content: start; border-left: 4px solid var(--orange); }
+.ap-card.prot { border-left-color: var(--crit); }
+.ap-card.grow { border-left-color: var(--ok); }
+.ap-card h3 { font: 600 16px/1.3 var(--body); margin: 0; }
+.ap-card .help { margin: 0; }
+.ap-top { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; align-items: center; }
+.ap-rule { font: 600 10.5px/1 var(--mono); text-transform: uppercase; letter-spacing: .05em; padding: 5px 7px; border-radius: 5px; }
+.ap-rule.prot { background: var(--crit-bg); color: var(--crit); }
+.ap-rule.grow { background: var(--ok-bg); color: var(--ok); }
+.ap-reason { margin: 0; font-size: 14px; line-height: 1.5; color: #3a3734; }
+.ap-budget { margin: 0; font-size: 14px; }
+.ap-btns { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.ap-seg button { padding: 7px 10px; white-space: nowrap; }
+.ap-hist { max-width: 460px; }
+.ap-hist .help { margin-top: 2px; }
+.ap-status { font: 600 11px/1 var(--mono); text-transform: uppercase; padding: 4px 6px; border-radius: 4px; background: var(--surface-2); color: var(--muted); white-space: nowrap; }
+.ap-status.ok { background: var(--ok-bg); color: var(--ok); }
+.ap-status.warn { background: var(--warn-bg); color: #8a6a00; }
+.ap-status.crit { background: var(--crit-bg); color: var(--crit); }
+.cfg-row .input.money { max-width: 150px; }
+
+/* ---------- Materiais ---------- */
+.drive-bar { display: flex; align-items: center; gap: 12px; padding: 12px 16px; flex-wrap: wrap; font-size: 14px; }
+.drive-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+.drive-dot.on { background: var(--ok); }
+.mat-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.mat-toolbar a.btn { text-decoration: none; }
+.folder-set { padding: 14px 16px; margin-bottom: 14px; display: grid; gap: 6px; }
+.uploads { padding: 10px 16px; margin-bottom: 14px; display: grid; gap: 8px; }
+.up-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; font-size: 13px; }
+.up-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gauge.wide { width: 160px; flex: none; margin: 0; }
+.gauge.wide > i { background: var(--orange); }
+.dropzone { border-radius: var(--radius); min-height: 160px; transition: box-shadow .15s; }
+.dropzone.over { box-shadow: 0 0 0 2px var(--orange); background: var(--orange-soft); }
+.mat .cr-thumb { aspect-ratio: 1; }
+.mat-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.mat-btns a.btn { text-decoration: none; }
+.drawer-wrap.center { align-items: center; justify-content: center; padding: 16px; }
+.modal { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; padding: 20px; position: relative; }
+.modal h2 { font-size: 19px; margin: 0; }
+.modal-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.modal textarea.input { resize: vertical; font: 14px/1.5 var(--body); }
+.dr-close.dark { position: static; color: var(--muted); }
+.dr-close.dark:hover { color: var(--ink); }
+
+@media (max-width: 760px) {
+  .ap-kpis { grid-template-columns: 1fr 1fr; }
+  .ap-grid { grid-template-columns: 1fr; }
+  .gauge.wide { width: 90px; }
+}
+.tbl-left td, .tbl-left th { text-align: left; }
+.mat-link { display: block; color: var(--ink); text-decoration: none; }
+.mat-link:hover { text-decoration: underline; }

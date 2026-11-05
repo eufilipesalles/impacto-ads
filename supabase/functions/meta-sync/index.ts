@@ -235,6 +235,10 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     fields: "id,name,objective,status,effective_status,daily_budget,lifetime_budget",
     filtering: notArchived,
   });
+  const adsets = await graphAll(`${act}/adsets`, {
+    fields: "id,name,campaign_id,status,effective_status,daily_budget,lifetime_budget,optimization_goal",
+    filtering: notArchived,
+  });
   const ads = await graphAll(`${act}/ads`, {
     fields: "id,name,status,effective_status,campaign_id,adset_id,issues_info,ad_review_feedback,created_time,preview_shareable_link," +
       "creative{id,object_type,body,title,thumbnail_url,image_url,video_id,call_to_action_type,object_story_spec,asset_feed_spec," +
@@ -286,6 +290,12 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     lifetime_budget: cents(c.lifetime_budget), updated_at: now,
   })), "id");
 
+  await upsert(sb, "adsets", adsets.map((s) => ({
+    id: s.id, ad_account_id: act, campaign_id: s.campaign_id, name: s.name, status: s.status,
+    effective_status: s.effective_status, daily_budget: cents(s.daily_budget), lifetime_budget: cents(s.lifetime_budget),
+    optimization_goal: s.optimization_goal ?? null, updated_at: now,
+  })), "id");
+
   await upsert(sb, "ads", ads.map((a) => {
     const r = rankBy.get(a.id as string);
     return {
@@ -312,7 +322,7 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     .eq("ad_account_id", act).gte("date", since).lte("date", until).lt("synced_at", stamp);
   if (delErr) throw new Error(`insights_daily: ${delErr.message}`);
 
-  return { campaigns: campaigns.length, ads: ads.length, days: accIns.length, since, until };
+  return { campaigns: campaigns.length, adsets: adsets.length, ads: ads.length, days: accIns.length, since, until };
 }
 
 // ---------------- totais de um período, ao vivo no Meta ----------------
