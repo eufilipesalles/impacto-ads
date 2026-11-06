@@ -15,6 +15,7 @@ import { ReportsPage } from "./pages/Reports";
 import { CreativesPage } from "./pages/Creatives";
 import { AutopilotPage } from "./pages/Autopilot";
 import { MaterialsPage } from "./pages/Materials";
+import { StrategyPage } from "./pages/Strategy";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(DEMO ? null : undefined);
@@ -55,6 +56,7 @@ export default function App() {
           <Route path="criativos" element={<CreativesPage />} />
           <Route path="materiais" element={<MaterialsPage />} />
           <Route path="piloto" element={<AutopilotPage />} />
+          <Route path="estrategia" element={<StrategyPage />} />
           <Route path="relatorios" element={<ReportsPage />} />
           <Route path="alertas" element={<AlertsPage />} />
           <Route path="configuracoes" element={<SettingsPage />} />

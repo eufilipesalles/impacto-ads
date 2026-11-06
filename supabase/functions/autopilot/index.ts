@@ -377,6 +377,9 @@ async function execute(sb: SupabaseClient, a: Json, who: string, auto = false) {
     } else if (a.kind === "create_ad") {
       result = await createAd(sb, a);
       previous = {};
+    } else if (a.kind === "launch_campaign") {
+      result = await launchCampaign(sb, a);
+      previous = {};
     }
     await sb.from("autopilot_actions").update({ status: "done", executed_at: nowIso(), previous, result, error: null }).eq("id", a.id);
     return { ok: true, result };
@@ -402,6 +405,9 @@ async function undo(sb: SupabaseClient, a: Json, who: string) {
   } else if (a.kind === "create_ad") {
     const adId = (a.result as Json)?.ad_id as string;
     if (adId) await graph(adId, { status: "PAUSED" }, "POST");     // anúncio criado: desfazer = pausar
+  } else if (a.kind === "launch_campaign") {
+    const cid = (a.result as Json)?.campaign_id as string;
+    if (cid) await graph(cid, { status: "PAUSED" }, "POST");      // campanha lançada: desfazer = pausar
   }
   await sb.from("autopilot_actions").update({ status: "undone", undone_at: nowIso(), undone_by: who }).eq("id", a.id);
 }
@@ -462,6 +468,72 @@ async function createAd(sb: SupabaseClient, a: Json) {
   await sb.from("ads").upsert({ id: ad.id, ad_account_id: act, adset_id: p.adset_id, campaign_id: adset.data?.campaign_id ?? null, name,
     status: p.activate === false ? "PAUSED" : "ACTIVE", effective_status: p.activate === false ? "PAUSED" : "IN_PROCESS", updated_at: nowIso() });
   return { ad_id: ad.id, creative_id: creative.id };
+}
+
+// ---------------- lançar campanha ----------------
+// Copia a campanha-modelo (pausada), aplica regiões, público, posicionamentos e verba do plano,
+// acrescenta criativos da biblioteca e ativa só o que estava ativo no modelo.
+const PLACEMENT_KEYS = ["publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions"];
+
+async function launchCampaign(sb: SupabaseClient, a: Json) {
+  const p = a.params as Json;
+  const act = a.ad_account_id as string;
+  const copy = await graph(`${p.source_campaign_id}/copies`, {
+    deep_copy: "true", status_option: "PAUSED", rename_options: JSON.stringify({ rename_strategy: "NO_RENAME" }),
+  }, "POST");
+  const map = ((copy.ad_object_ids as Json[] | undefined) ?? []);
+  const newId = (copy.copied_campaign_id as string) ?? (map.find((m) => m.ad_object_type === "campaign")?.copied_id as string);
+  if (!newId) throw new Error("O Meta não devolveu a campanha copiada.");
+  await graph(newId, { name: String(p.name) }, "POST");
+
+  const camp = await graph(newId, { fields: "daily_budget" });
+  const sets = ((await graph(`${newId}/adsets`, { fields: "id,name,targeting,daily_budget", limit: "100" })).data as Json[]) ?? [];
+  const budgetCents = p.daily_budget ? Math.round(Number(p.daily_budget) * 100) : 0;
+  const changes: Json[] = [];
+  for (const s of sets) {
+    const t: Json = { ...((s.targeting as Json) ?? {}) };
+    if (p.geo) t.geo_locations = p.geo;
+    const aud = (p.audience as Json) ?? {};
+    if (aud.age_min) t.age_min = aud.age_min;
+    if (aud.age_max) t.age_max = aud.age_max;
+    if (aud.genders) t.genders = aud.genders;
+    const plc = p.placements as Json | null;
+    if (plc) {
+      for (const k of PLACEMENT_KEYS) delete t[k];
+      if (!plc.advantage) for (const [k, v] of Object.entries(plc)) t[k] = v;
+    }
+    const upd: Record<string, string> = { targeting: JSON.stringify(t) };
+    if (budgetCents && !num(camp.daily_budget) && num(s.daily_budget)) upd.daily_budget = String(Math.max(1000, Math.round(budgetCents / sets.length)));
+    await graph(s.id as string, upd, "POST");
+    changes.push({ adset: s.id, geo: !!p.geo, placements: !!plc, budget: upd.daily_budget ? Number(upd.daily_budget) / 100 : null });
+  }
+  if (budgetCents && num(camp.daily_budget)) await graph(newId, { daily_budget: String(budgetCents) }, "POST");
+
+  // criativos novos da biblioteca, no primeiro conjunto, com o texto/botão de um anúncio copiado
+  const copiedAds = map.filter((m) => m.ad_object_type === "ad");
+  const newAds: Json[] = [];
+  const assetIds = (p.asset_ids as string[] | undefined) ?? [];
+  if (assetIds.length && sets.length && copiedAds.length) {
+    for (const assetId of assetIds) {
+      const r = await createAd(sb, { ad_account_id: act, params: {
+        adset_id: sets[0].id, template_ad_id: copiedAds[0].copied_id, asset_id: assetId, activate: p.activate === true,
+      } });
+      newAds.push(r);
+    }
+  }
+
+  // ativação: só o que estava ativo no modelo (anúncios pausados no modelo continuam pausados)
+  if (p.activate === true) {
+    const srcIds = copiedAds.map((m) => m.source_id as string);
+    const { data: srcAds } = await sb.from("ads").select("id, effective_status").in("id", srcIds.length ? srcIds : ["-"]);
+    const activeSrc = new Set((srcAds ?? []).filter((x) => x.effective_status === "ACTIVE").map((x) => x.id));
+    for (const m of copiedAds) if (activeSrc.has(m.source_id as string)) await graph(m.copied_id as string, { status: "ACTIVE" }, "POST");
+    for (const s of sets) await graph(s.id as string, { status: "ACTIVE" }, "POST");
+    await graph(newId, { status: "ACTIVE" }, "POST");
+  }
+  await sb.from("campaigns").upsert({ id: newId, ad_account_id: act, name: String(p.name), status: p.activate ? "ACTIVE" : "PAUSED",
+    effective_status: p.activate ? "IN_PROCESS" : "PAUSED", daily_budget: p.daily_budget ?? null, updated_at: nowIso() });
+  return { campaign_id: newId, adsets: changes, copied_ads: copiedAds.length, new_ads: newAds.length, active: p.activate === true };
 }
 
 // ---------------- handler ----------------

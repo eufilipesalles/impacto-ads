@@ -21,6 +21,7 @@ export function Layout({ email }: { email: string }) {
   const links = [
     { to: `/${q}`, label: "Hoje", end: true },
     { to: `/clientes${q}`, label: "Clientes" },
+    { to: `/estrategia${q}`, label: "Estratégia" },
     { to: `/piloto${q}`, label: "Piloto automático" },
     { to: `/criativos${q}`, label: "Criativos" },
     { to: `/materiais${q}`, label: "Materiais" },

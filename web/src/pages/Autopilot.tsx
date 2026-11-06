@@ -27,11 +27,12 @@ const STATUS: Record<string, { text: string; cls: string }> = {
 
 const RULE_LABEL: Record<string, string> = {
   pause_no_result: "Sem resultado", pause_expensive: "Custo alto", scale_down: "Reduzir verba", scale_up: "Escalar",
-  monthly_cap: "Teto do mês", create_ad: "Novo anúncio", manual: "Manual",
+  monthly_cap: "Teto do mês", create_ad: "Novo anúncio", launch_campaign: "Nova campanha", manual: "Manual",
 };
 
 function detail(a: AutopilotAction) {
-  const r = a.result as { targets?: { name?: string; from: number; to: number }[]; ad_id?: string } | null;
+  const r = a.result as { targets?: { name?: string; from: number; to: number }[]; ad_id?: string; campaign_id?: string; active?: boolean } | null;
+  if (a.kind === "launch_campaign" && r?.campaign_id) return `campanha ${r.campaign_id} criada ${r.active ? "ativa" : "pausada"}`;
   if (r?.targets?.length) return r.targets.map((t) => `${money(t.from)} → ${money(t.to)}/dia`).join(" · ");
   if (a.kind === "pause" && a.status === "done") return "anúncio pausado";
   if (a.kind === "create_ad" && r?.ad_id) return `anúncio ${r.ad_id}`;

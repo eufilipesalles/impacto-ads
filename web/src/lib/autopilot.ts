@@ -8,7 +8,7 @@ export interface AutopilotAction {
   client_id: string;
   ad_account_id: string | null;
   rule: string;
-  kind: "pause" | "activate" | "set_budget" | "create_ad";
+  kind: "pause" | "activate" | "set_budget" | "create_ad" | "launch_campaign";
   protective: boolean;
   object_type: string | null;
   object_id: string | null;
