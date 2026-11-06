@@ -27,14 +27,15 @@ const STATUS: Record<string, { text: string; cls: string }> = {
 
 const RULE_LABEL: Record<string, string> = {
   pause_no_result: "Sem resultado", pause_expensive: "Custo alto", scale_down: "Reduzir verba", scale_up: "Escalar",
-  monthly_cap: "Teto do mês", create_ad: "Novo anúncio", launch_campaign: "Nova campanha", manual: "Manual",
+  monthly_cap: "Teto do mês", create_ad: "Novo anúncio", launch_campaign: "Nova campanha", manual: "Gerenciador", new_creative: "Criativo novo",
 };
 
 function detail(a: AutopilotAction) {
   const r = a.result as { targets?: { name?: string; from: number; to: number }[]; ad_id?: string; campaign_id?: string; active?: boolean } | null;
   if (a.kind === "launch_campaign" && r?.campaign_id) return `campanha ${r.campaign_id} criada ${r.active ? "ativa" : "pausada"}`;
   if (r?.targets?.length) return r.targets.map((t) => `${money(t.from)} → ${money(t.to)}/dia`).join(" · ");
-  if (a.kind === "pause" && a.status === "done") return "anúncio pausado";
+  if (a.kind === "pause" && a.status === "done") return a.object_type === "campaign" ? "campanha pausada" : a.object_type === "adset" ? "conjunto pausado" : "anúncio pausado";
+  if (a.kind === "activate" && a.status === "done") return "ativado";
   if (a.kind === "create_ad" && r?.ad_id) return `anúncio ${r.ad_id}`;
   return "";
 }
@@ -242,6 +243,7 @@ export function AutopilotPage() {
             <li><b>Reduzir verba</b> — reduz 20% o orçamento da campanha com custo 1,6x a meta na semana e sem melhora nos últimos 3 dias.</li>
             <li><b>Teto do mês</b> — reduz os orçamentos quando o ritmo de gasto vai passar do teto mensal.</li>
             <li><b>Escalar</b> — aumenta o orçamento (padrão 20%) da campanha 20% mais barata que a meta, estável nos últimos 3 dias e usando 85%+ do orçamento.</li>
+            <li><b>Criativo novo</b> — criativo deixado com o piloto entra no conjunto com o menor custo por resultado dos últimos 14 dias, com o texto e o botão do anúncio que mais converte ali. Em Autônomo sobe sozinho; nos demais níveis vira proposta.</li>
           </ul>
           <p><b>Travas:</b> nunca pausa o último anúncio ativo de um conjunto; no máximo uma mudança de orçamento por campanha a cada 3 dias (para não reiniciar o aprendizado do Meta); orçamento nunca abaixo de R$ 10/dia; aumento nunca passa do teto do mês; aumentos só na análise da manhã. Toda ação fica no histórico e pode ser desfeita em até 7 dias. <b>Parar tudo</b> bloqueia qualquer execução automática na hora.</p>
         </div>

@@ -6,6 +6,8 @@
 //   { action: "undo", id }                                             → desfaz uma ação executada
 //   { action: "pause_all", paused: bool }                              → botão geral "parar tudo"
 //   { action: "create_ad", client_id, ad_account_id, adset_id, template_ad_id, asset_id, name?, activate? }
+//   { action: "manual", object_type, object_id, kind: pause|activate|set_budget, amount? } → gerenciador (executa na hora)
+//   { action: "add_creative", asset_id, adset_id?, campaign_id?, mode: now|approve|auto } → criativo vira anúncio no melhor conjunto
 //   { action: "check" }                                                → permissões do token no Meta
 //
 // Chamadas: pg_cron (header x-cron-secret) ou usuário da equipe logado (Authorization: Bearer <jwt>).
@@ -16,6 +18,7 @@
 //   scale_down       — campanha com custo 1,6x a meta em 7 dias e ruim também em 3 dias    (protege a verba)
 //   monthly_cap      — ritmo de gasto vai estourar o teto do mês                           (protege a verba)
 //   scale_up         — campanha 20% mais barata que a meta, estável e limitada pelo orçamento (aumenta gasto)
+//   new_creative     — criativo deixado para o piloto: entra no conjunto mais eficiente (Autônomo executa; demais, proposta)
 // Travas: nunca pausa o último anúncio ativo de um conjunto; uma mudança de orçamento por campanha a cada 3 dias;
 // aumento máximo configurável (padrão 20%); orçamento mínimo de R$ 10/dia; teto mensal respeitado.
 
@@ -122,7 +125,7 @@ async function evaluate(sb: SupabaseClient, opts: { protectiveOnly: boolean; cli
 
   // Expira propostas antigas
   await sb.from("autopilot_actions").update({ status: "expired", decided_at: nowIso() })
-    .eq("status", "proposed").lt("created_at", new Date(Date.now() - PROPOSAL_TTL_HOURS * 3600_000).toISOString());
+    .eq("status", "proposed").not("kind", "in", "(create_ad,launch_campaign)").lt("created_at", new Date(Date.now() - PROPOSAL_TTL_HOURS * 3600_000).toISOString());
 
   let cq = sb.from("clients").select("id, name, objective, monthly_budget, ad_accounts(id, account_status)").eq("active", true);
   if (opts.clientId) cq = cq.eq("id", opts.clientId);
@@ -320,12 +323,31 @@ async function evaluate(sb: SupabaseClient, opts: { protectiveOnly: boolean; cli
           params: { factor: 1 + maxUp, targets: hs.map((h) => ({ type: h.type, id: h.id, name: h.name })) } });
       }
     }
+
+    // ---- criativos novos que a equipe deixou para o piloto colocar no ar ----
+    if (!opts.protectiveOnly) {
+      const { data: fresh } = await sb.from("creative_assets").select("id, name, target_campaign_id")
+        .eq("client_id", c.id).eq("auto_place", true).eq("removed", false).is("used_at", null).limit(10);
+      for (const asset of fresh ?? []) {
+        const { data: already } = await sb.from("autopilot_actions").select("id").eq("rule", "new_creative")
+          .eq("params->>asset_id", asset.id).in("status", ["proposed", "approved", "executing", "done"]).limit(1);
+        if (already?.length) continue;
+        const target = await bestAdset(sb, c.id, asset.target_campaign_id as string | null);
+        if (!target) { skipped.push({ asset: asset.id, why: "nenhum conjunto ativo para receber o criativo" }); continue; }
+        base({ ad_account_id: target.ad_account_id, rule: "new_creative", kind: "create_ad", protective: false,
+          object_type: "adset", object_id: target.adset_id, object_name: target.adset_name, campaign_name: target.campaign_name,
+          title: `Colocar no ar o criativo "${asset.name}"`,
+          reason: `Criativo novo enviado pela equipe. Vai para o conjunto "${target.adset_name}" — ${target.why} — com o texto e o botão do anúncio que mais converte nele.`,
+          evidence: { conjunto: target.adset_name, campanha: target.campaign_name },
+          params: { adset_id: target.adset_id, asset_id: asset.id, activate: true } });
+      }
+    }
   }
 
   // Grava sem repetir: mesma regra no mesmo objeto já pendente, ou já executada nos últimos 3 dias
   const created: Json[] = [];
   for (const p of proposals) {
-    const { data: dup } = await sb.from("autopilot_actions").select("id")
+    const { data: dup } = p.rule === "new_creative" ? { data: [] } : await sb.from("autopilot_actions").select("id")
       .eq("object_id", p.object_id).eq("rule", p.rule)
       .or(`status.in.(proposed,approved,executing),and(status.eq.done,executed_at.gte."${new Date(Date.now() - 3 * 86400_000).toISOString()}")`)
       .limit(1);
@@ -333,7 +355,7 @@ async function evaluate(sb: SupabaseClient, opts: { protectiveOnly: boolean; cli
     const { data: row, error } = await sb.from("autopilot_actions").insert(p).select("*").single();
     if (error) throw new Error(error.message);
     const level = Number(settings.get(p.client_id)?.level ?? 0);
-    const auto = !paused && ((p.protective && level >= 1) || (p.rule === "scale_up" && level >= 2));
+    const auto = !paused && ((p.protective && level >= 1) || (["scale_up", "new_creative"].includes(p.rule) && level >= 2));
     if (auto) {
       await execute(sb, row, "piloto automático", true);
     }
@@ -364,7 +386,8 @@ async function execute(sb: SupabaseClient, a: Json, who: string, auto = false) {
         const from = num(live.daily_budget);                       // centavos
         if (!from) continue;
         const floor = MIN_DAILY_BUDGET * 100;
-        const to = Math.max(Math.round(from * factor), factor < 1 ? floor : 0);
+        const to = params.amount ? Math.round(Number(params.amount) * 100)
+          : Math.max(Math.round(from * factor), factor < 1 ? floor : 0);
         if (to === from) continue;
         await graph(t.id as string, { daily_budget: String(to) }, "POST");
         prev.push({ type: t.type, id: t.id, daily_budget: from });
@@ -417,10 +440,20 @@ async function undo(sb: SupabaseClient, a: Json, who: string) {
 async function createAd(sb: SupabaseClient, a: Json) {
   const p = a.params as Json;
   const act = a.ad_account_id as string;
-  const { data: asset, error } = await sb.from("creative_assets").select("id, name, kind, meta").eq("id", p.asset_id).single();
+  let { data: asset, error } = await sb.from("creative_assets").select("id, name, kind, meta, source").eq("id", p.asset_id).single();
   if (error || !asset) throw new Error("Material não encontrado na biblioteca.");
-  const media = ((asset.meta as Json)?.[act] as Json | undefined) ?? {};
-  if (!media.image_hash && !media.video_id) throw new Error("Envie o material para esta conta do Meta antes de criar o anúncio.");
+  let media = ((asset.meta as Json)?.[act] as Json | undefined) ?? {};
+  if (!media.image_hash && !media.video_id && !media.ig_media_id && asset.source !== "drive") {
+    await sendMedia(asset.id as string, act);
+    ({ data: asset } = await sb.from("creative_assets").select("id, name, kind, meta, source").eq("id", p.asset_id).single());
+    media = ((asset!.meta as Json)?.[act] as Json | undefined) ?? {};
+  }
+  if (!media.image_hash && !media.video_id && !media.ig_media_id) throw new Error("Envie o material para esta conta do Meta antes de criar o anúncio.");
+  if (!p.template_ad_id) {
+    const tpl = await templateAd(sb, String(p.adset_id));
+    if (!tpl) throw new Error("O conjunto não tem anúncio para servir de modelo (texto e botão). Escolha outro conjunto.");
+    p.template_ad_id = tpl;
+  }
 
   const tpl = await graph(p.template_ad_id as string, {
     fields: "creative{object_story_spec,asset_feed_spec,effective_object_story_id,actor_id,instagram_user_id,body,title,call_to_action_type,link_url}",
@@ -446,7 +479,15 @@ async function createAd(sb: SupabaseClient, a: Json) {
     ?? (ctaType === "WHATSAPP_MESSAGE" ? "https://api.whatsapp.com/send" : undefined);
 
   const spec: Json = { page_id: pageId, ...(igId ? { [igKey]: igId } : {}) };
-  if (media.video_id) {
+  const name = (p.name as string) || `${asset!.name} — Impacto Ads`;
+  let creativeParams: Record<string, string>;
+  if (media.ig_media_id) {
+    // post do Instagram usado como anúncio: mantém curtidas e comentários do post original
+    const igCta = cta ? (cta.type === "WHATSAPP_MESSAGE" ? { type: "WHATSAPP_MESSAGE", value: { app_destination: "WHATSAPP" } }
+      : { type: cta.type, value: { link: ((cta.value as Json)?.link as string) ?? link } }) : undefined;
+    creativeParams = { name, object_id: String(media.page_id ?? pageId), instagram_user_id: String(media.ig_user_id ?? igId ?? ""),
+      source_instagram_media_id: String(media.ig_media_id), ...(igCta ? { call_to_action: JSON.stringify(igCta) } : {}) };
+  } else if (media.video_id) {
     const v = await graph(media.video_id as string, { fields: "status,picture,thumbnails{uri,is_preferred}" });
     const vs = ((v.status as Json)?.video_status as string) ?? "";
     if (vs && vs !== "ready") throw new Error("O vídeo ainda está sendo processado pelo Meta. Tente de novo em alguns minutos.");
@@ -457,9 +498,9 @@ async function createAd(sb: SupabaseClient, a: Json) {
     if (!link) throw new Error("O anúncio modelo não tem link de destino. Escolha um modelo com botão de ação.");
     spec.link_data = { image_hash: media.image_hash, message, link, ...(title ? { name: title } : {}), ...(cta ? { call_to_action: cta } : {}) };
   }
+  if (!media.ig_media_id) creativeParams = { name, object_story_spec: JSON.stringify(spec) };
 
-  const name = (p.name as string) || `${asset.name} — Impacto Ads`;
-  const creative = await graph(`${act}/adcreatives`, { name, object_story_spec: JSON.stringify(spec) }, "POST");
+  const creative = await graph(`${act}/adcreatives`, creativeParams!, "POST");
   const ad = await graph(`${act}/ads`, {
     name, adset_id: String(p.adset_id), creative: JSON.stringify({ creative_id: creative.id }),
     status: p.activate === false ? "PAUSED" : "ACTIVE",
@@ -467,7 +508,69 @@ async function createAd(sb: SupabaseClient, a: Json) {
   const adset = await sb.from("adsets").select("campaign_id").eq("id", p.adset_id).maybeSingle();
   await sb.from("ads").upsert({ id: ad.id, ad_account_id: act, adset_id: p.adset_id, campaign_id: adset.data?.campaign_id ?? null, name,
     status: p.activate === false ? "PAUSED" : "ACTIVE", effective_status: p.activate === false ? "PAUSED" : "IN_PROCESS", updated_at: nowIso() });
+  await sb.from("creative_assets").update({ used_at: nowIso() }).eq("id", asset!.id).is("used_at", null);
   return { ad_id: ad.id, creative_id: creative.id };
+}
+
+// Leva o arquivo enviado no painel / post do Instagram para a conta de anúncios (função "creatives")
+async function sendMedia(assetId: string, act: string) {
+  const res = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/creatives`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+    body: JSON.stringify({ action: "send_to_meta", asset_id: assetId, ad_account_id: act }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error ?? "Falha ao enviar o material ao Meta.");
+  return j;
+}
+
+// Anúncio-modelo do conjunto: o que mais trouxe resultado em 14 dias (texto, botão e destino são reaproveitados)
+async function templateAd(sb: SupabaseClient, adsetId: string) {
+  const { data: ads } = await sb.from("ads").select("id, effective_status").eq("adset_id", adsetId);
+  if (!ads?.length) return null;
+  const { data: rows } = await sb.from("insights_daily").select("object_id, spend, conversations, leads, purchases, link_clicks")
+    .eq("level", "ad").in("object_id", ads.map((a) => a.id)).gte("date", brDate(-14));
+  const score = new Map<string, number>();
+  for (const r of rows ?? []) score.set(r.object_id, (score.get(r.object_id) ?? 0) + num(r.conversations) + num(r.leads) + num(r.purchases) * 3 + num(r.link_clicks) * 0.01);
+  return [...ads].sort((a, b) => (b.effective_status === "ACTIVE" ? 1 : 0) - (a.effective_status === "ACTIVE" ? 1 : 0) || (score.get(b.id) ?? 0) - (score.get(a.id) ?? 0))[0].id as string;
+}
+
+// Melhor conjunto ativo do cliente (ou da campanha escolhida): menor custo por resultado em 14 dias, com suavização
+async function bestAdset(sb: SupabaseClient, clientId: string, campaignId?: string | null) {
+  const { data: accs } = await sb.from("ad_accounts").select("id").eq("client_id", clientId).eq("account_status", 1);
+  const accIds = (accs ?? []).map((a) => a.id);
+  if (!accIds.length) return null;
+  let q = sb.from("adsets").select("id, name, ad_account_id, campaign_id").in("ad_account_id", accIds).eq("effective_status", "ACTIVE");
+  if (campaignId) q = q.eq("campaign_id", campaignId);
+  const { data: sets } = await q;
+  const { data: camps } = await sb.from("campaigns").select("id, name, effective_status").in("id", [...new Set((sets ?? []).map((s) => s.campaign_id))].concat(["-"]));
+  const campBy = new Map((camps ?? []).map((c) => [c.id as string, c]));
+  const live = (sets ?? []).filter((s) => campaignId || campBy.get(s.campaign_id)?.effective_status === "ACTIVE");
+  if (!live.length) return null;
+  const { data: ads } = await sb.from("ads").select("id, adset_id").in("adset_id", live.map((s) => s.id));
+  const setOf = new Map((ads ?? []).map((a) => [a.id as string, a.adset_id as string]));
+  const rows = await selectAll<Json>((f) => sb.from("insights_daily").select("object_id, spend, conversations, leads, purchases")
+    .eq("level", "ad").in("object_id", [...setOf.keys()].length ? [...setOf.keys()] : ["-"]).gte("date", brDate(-14)).range(f, f + 999));
+  const agg = new Map<string, { spend: number; res: number }>();
+  for (const r of rows) {
+    const sid = setOf.get(r.object_id as string); if (!sid) continue;
+    const e = agg.get(sid) ?? { spend: 0, res: 0 };
+    e.spend += num(r.spend); e.res += num(r.conversations) + num(r.leads) + num(r.purchases);
+    agg.set(sid, e);
+  }
+  const tSpend = [...agg.values()].reduce((t, x) => t + x.spend, 0), tRes = [...agg.values()].reduce((t, x) => t + x.res, 0);
+  const avg = tRes ? tSpend / tRes : 0;
+  const scored = live.filter((s) => setOf.size === 0 || [...setOf.values()].includes(s.id as string)).map((s) => {
+    const e = agg.get(s.id as string) ?? { spend: 0, res: 0 };
+    const smooth = avg ? (e.spend + 3 * avg) / (e.res + 3) : Infinity;   // conjunto com pouco dado fica perto da média
+    return { s, e, smooth };
+  }).sort((a, b) => a.smooth - b.smooth || b.e.spend - a.e.spend);
+  const best = scored[0];
+  if (!best) return null;
+  const camp = campBy.get(best.s.campaign_id);
+  const why = best.e.res ? `melhor custo por resultado da conta nos últimos 14 dias (${money(best.e.spend / best.e.res)}, ${best.e.res} resultados)` : "conjunto ativo da campanha";
+  return { adset_id: best.s.id as string, adset_name: best.s.name as string, ad_account_id: best.s.ad_account_id as string,
+    campaign_id: best.s.campaign_id as string, campaign_name: camp?.name ?? "", why };
 }
 
 // ---------------- lançar campanha ----------------
@@ -597,12 +700,13 @@ Deno.serve(async (req) => {
         for (const k of ["client_id", "ad_account_id", "adset_id", "template_ad_id", "asset_id"]) {
           if (!body[k]) return reply({ error: `Campo obrigatório: ${k}` }, 400);
         }
-        const { data: adset } = await sb.from("adsets").select("name, campaign_id, campaigns(name)").eq("id", body.adset_id).maybeSingle();
+        const { data: adset } = await sb.from("adsets").select("name, campaign_id").eq("id", body.adset_id).maybeSingle();
+        const { data: adCamp } = adset ? await sb.from("campaigns").select("name").eq("id", adset.campaign_id).maybeSingle() : { data: null };
         const { data: asset } = await sb.from("creative_assets").select("name").eq("id", body.asset_id).maybeSingle();
         const { data: row, error } = await sb.from("autopilot_actions").insert({
           client_id: body.client_id, ad_account_id: body.ad_account_id, rule: "create_ad", kind: "create_ad", protective: false,
           object_type: "adset", object_id: body.adset_id, object_name: adset?.name ?? null,
-          campaign_name: (adset?.campaigns as unknown as { name: string } | null)?.name ?? null,
+          campaign_name: (adCamp?.name as string) ?? null,
           title: `Novo anúncio com "${asset?.name ?? "material"}"`,
           reason: `Criado pela equipe a partir da biblioteca, usando o texto e o botão do anúncio modelo.`,
           params: { adset_id: body.adset_id, template_ad_id: body.template_ad_id, asset_id: body.asset_id, name: body.name ?? null,
@@ -612,6 +716,65 @@ Deno.serve(async (req) => {
         if (error) throw new Error(error.message);
         const r = await execute(sb, row, who);
         return reply(r, r.ok ? 200 : 502);
+      }
+      case "manual": {
+        // gerenciador: pausar, ativar ou mudar orçamento na hora (fica no histórico e pode ser desfeito)
+        const kind = String(body.kind);
+        if (!["pause", "activate", "set_budget"].includes(kind)) return reply({ error: "ação manual inválida" }, 400);
+        const type = String(body.object_type);
+        const table = type === "ad" ? "ads" : type === "adset" ? "adsets" : "campaigns";
+        const { data: obj } = await sb.from(table).select("*").eq("id", body.object_id).maybeSingle();
+        if (!obj) return reply({ error: "Item não encontrado. Atualize a página." }, 404);
+        const { data: acc } = await sb.from("ad_accounts").select("client_id").eq("id", obj.ad_account_id).single();
+        let camp = type === "campaign" ? obj : null;
+        if (!camp && obj.campaign_id) camp = (await sb.from("campaigns").select("name").eq("id", obj.campaign_id).maybeSingle()).data;
+        const amount = Number(body.amount ?? 0);
+        if (kind === "set_budget" && !(amount >= MIN_DAILY_BUDGET)) return reply({ error: `Orçamento mínimo de ${money(MIN_DAILY_BUDGET)} por dia.` }, 400);
+        const label = type === "ad" ? "anúncio" : type === "adset" ? "conjunto" : "campanha";
+        const title = kind === "pause" ? `Pausar ${label} "${obj.name}"` : kind === "activate" ? `Ativar ${label} "${obj.name}"`
+          : `Orçamento de "${obj.name}" para ${money(amount)}/dia`;
+        const { data: row, error } = await sb.from("autopilot_actions").insert({
+          client_id: acc!.client_id, ad_account_id: obj.ad_account_id, rule: "manual", kind, protective: kind === "pause",
+          object_type: type, object_id: obj.id, object_name: obj.name, campaign_name: (camp?.name as string) ?? null,
+          title, reason: `Feito pela equipe no gerenciador${body.note ? `: ${body.note}` : "."}`,
+          params: kind === "set_budget" ? { amount, targets: [{ type, id: obj.id, name: obj.name }] } : { status: kind === "pause" ? "PAUSED" : "ACTIVE" },
+          status: "approved", decided_by: who, decided_at: nowIso(),
+        }).select("*").single();
+        if (error) throw new Error(error.message);
+        const r = await execute(sb, row, who);
+        return reply({ ...r, id: row.id }, r.ok ? 200 : 502);
+      }
+      case "add_creative": {
+        // um material → anúncio. Destino: conjunto escolhido, ou o melhor conjunto da campanha/cliente.
+        // mode: "now" (sobe ativo agora) | "approve" (fica pronto, ativa com um toque) | "auto" (o piloto decide na próxima rodada)
+        const { data: asset } = await sb.from("creative_assets").select("id, name, client_id").eq("id", body.asset_id).single();
+        if (!asset) return reply({ error: "Material não encontrado" }, 404);
+        if (body.mode === "auto") {
+          await sb.from("creative_assets").update({ auto_place: true, target_campaign_id: body.campaign_id ?? null }).eq("id", asset.id);
+          const r = await evaluate(sb, { protectiveOnly: false, clientId: asset.client_id });
+          return reply({ ok: true, queued: true, ...r });
+        }
+        let target: Awaited<ReturnType<typeof bestAdset>> = null;
+        if (body.adset_id) {
+          const { data: s } = await sb.from("adsets").select("id, name, ad_account_id, campaign_id").eq("id", body.adset_id).single();
+          const { data: cp } = s ? await sb.from("campaigns").select("name").eq("id", s.campaign_id).maybeSingle() : { data: null };
+          if (s) target = { adset_id: s.id, adset_name: s.name, ad_account_id: s.ad_account_id, campaign_id: s.campaign_id,
+            campaign_name: (cp?.name as string) ?? "", why: "escolhido pela equipe" };
+        } else target = await bestAdset(sb, asset.client_id, body.campaign_id ?? null);
+        if (!target) return reply({ error: "Não há conjunto ativo para receber o criativo. Escolha um conjunto ou lance uma campanha nova." }, 400);
+        const now = body.mode !== "approve";
+        const { data: row, error } = await sb.from("autopilot_actions").insert({
+          client_id: asset.client_id, ad_account_id: target.ad_account_id, rule: "create_ad", kind: "create_ad", protective: false,
+          object_type: "adset", object_id: target.adset_id, object_name: target.adset_name, campaign_name: target.campaign_name,
+          title: `Novo anúncio com "${asset.name}"`,
+          reason: `Conjunto "${target.adset_name}" (${target.why}). Usa o texto e o botão do anúncio que mais converte nesse conjunto.`,
+          params: { adset_id: target.adset_id, asset_id: asset.id, activate: true, name: body.name ?? null },
+          status: now ? "approved" : "proposed", ...(now ? { decided_by: who, decided_at: nowIso() } : {}),
+        }).select("*").single();
+        if (error) throw new Error(error.message);
+        if (!now) return reply({ ok: true, proposed: true, id: row.id, target });
+        const r = await execute(sb, row, who);
+        return reply({ ...r, id: row.id, target }, r.ok ? 200 : 502);
       }
       default:
         return reply({ error: "ação desconhecida" }, 400);

@@ -6,6 +6,7 @@
 // { action: "geo_search", q }               → cidades para o perfil de campanha (com a "key" que o Meta usa)
 // { action: "plan_launch", client_id, asset_ids?, daily_budget?, activate? } → monta o plano e cria a ação na fila do piloto
 // { action: "images64", urls }              → imagens dos criativos em base64 (para o relatório em slides)
+// { action: "weekly_reports" | "monthly_reports", client_id?, since?, until? } → relatórios automáticos (texto + dados dos slides)
 //
 // Chamadas: pg_cron (x-cron-secret) ou usuário da equipe logado.
 
@@ -86,6 +87,7 @@ const A = {
   video: "video_view",
   reply: "onsite_conversion.messaging_first_reply",
 };
+const conf = (n: number) => (n >= 30 ? "alta" : n >= 10 ? "média" : "baixa");
 const money = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const pct = (v: number, d = 1) => `${(v * 100).toLocaleString("pt-BR", { maximumFractionDigits: d, minimumFractionDigits: d })}%`;
 const nowIso = () => new Date().toISOString();
@@ -304,9 +306,12 @@ async function selectAll<T>(build: (from: number) => PromiseLike<{ data: T[] | n
   return out;
 }
 
-async function analyze(sb: SupabaseClient, clientId: string, days: number) {
-  const until = brDate(-1), since = brDate(-days);
-  const bSince = brDate(-90);  // referência: os últimos 90 dias do próprio cliente
+const addDays = (iso: string, n: number) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return ymd(d); };
+
+async function analyze(sb: SupabaseClient, clientId: string, days: number, range?: { since: string; until: string }) {
+  const until = range?.until ?? brDate(-1), since = range?.since ?? brDate(-days);
+  if (range) days = Math.round((Date.parse(until) - Date.parse(since)) / 86400_000) + 1;
+  const bSince = addDays(until, -89);  // referência: os 90 dias do próprio cliente até o fim do período
   const { data: client } = await sb.from("clients").select("id, name, objective, monthly_budget, ad_accounts(id)").eq("id", clientId).single();
   if (!client) throw new Error("Cliente não encontrado");
   const accIds = ((client.ad_accounts as { id: string }[]) ?? []).map((a) => a.id);
@@ -333,7 +338,7 @@ async function analyze(sb: SupabaseClient, clientId: string, days: number) {
 
   // agregados: período e referência (90 dias) por campanha e por tipo
   const cur = new Map<string, Totals>(), ref = new Map<Kind, Totals>(), prev = new Map<string, Totals>();
-  const prevSince = brDate(-2 * days), prevUntil = brDate(-days - 1);
+  const prevSince = addDays(since, -days), prevUntil = addDays(since, -1);
   for (const r of rows) {
     const c = campBy.get(r.object_id as string);
     const k = campaignKind(c?.objective as string, clientKind ?? null);
@@ -341,7 +346,7 @@ async function analyze(sb: SupabaseClient, clientId: string, days: number) {
     const d = r.date as string;
     if (!ref.has(k)) ref.set(k, zero());
     addRow(ref.get(k)!, r, k);
-    if (d >= since) { if (!cur.has(r.object_id as string)) cur.set(r.object_id as string, zero()); addRow(cur.get(r.object_id as string)!, r, k); }
+    if (d >= since && d <= until) { if (!cur.has(r.object_id as string)) cur.set(r.object_id as string, zero()); addRow(cur.get(r.object_id as string)!, r, k); }
     else if (d >= prevSince && d <= prevUntil) { if (!prev.has(r.object_id as string)) prev.set(r.object_id as string, zero()); addRow(prev.get(r.object_id as string)!, r, k); }
   }
 
@@ -409,17 +414,17 @@ async function analyze(sb: SupabaseClient, clientId: string, days: number) {
   const K = KIND_TXT[mainKind];
   const plc = cuts.placement ?? [];
   const avgPlc = (() => { const s = plc.reduce((t, x) => t + x.spend, 0), r = plc.reduce((t, x) => t + x.result, 0); return r ? s / r : null; })();
-  const winners = plc.filter((x) => x.result >= 3 && (x.index ?? 0) >= 1.15).slice(0, 3);
+  const winners = plc.filter((x) => x.result >= 5 && (x.index ?? 0) >= 1.15).slice(0, 3);
   const losers = plc.filter((x) => x.share >= 0.08 && (x.index ?? 9) <= 0.7);
   if (winners.length && avgPlc) insights.push({ area: "Posicionamentos",
-    text: `Melhores posicionamentos: ${winners.map((w) => `${w.label} (${money(w.cpr ?? 0)} por ${K.one})`).join(", ")}. Média de todos: ${money(avgPlc)}.`,
+    text: `Melhores posicionamentos: ${winners.map((w) => `${w.label} (${money(w.cpr ?? 0)} por ${K.one}, ${w.result} resultados)`).join(", ")}. Média de todos: ${money(avgPlc)}. Confiança ${conf(winners.reduce((t, w) => t + w.result, 0))}.`,
     action: "Priorizar esses posicionamentos nas próximas campanhas." });
   for (const l of losers) insights.push({ area: "Posicionamentos",
     text: `${l.label} consome ${pct(l.share, 0)} da verba com ${l.result ? `${money(l.cpr ?? 0)} por ${K.one}` : `nenhuma ${K.one}`}.`,
     action: `Excluir ou reduzir ${l.label} nas novas campanhas.` });
 
   const ag = cuts.age_gender ?? [];
-  const agBest = ag.filter((x) => x.result >= 3 && (x.index ?? 0) >= 1.2).slice(0, 3);
+  const agBest = ag.filter((x) => x.result >= 5 && (x.index ?? 0) >= 1.2).slice(0, 3);
   const agWorst = ag.filter((x) => x.share >= 0.08 && (x.index ?? 9) <= 0.65);
   if (agBest.length) insights.push({ area: "Público", text: `Público que mais responde: ${agBest.map((x) => `${x.label} (${money(x.cpr ?? 0)})`).join(", ")}.`, action: "Usar esses perfis como referência de criativo e texto (linguagem, dores, exemplos)." });
   for (const x of agWorst) insights.push({ area: "Público", text: `${x.label}: ${pct(x.share, 0)} da verba com custo bem acima da média.`, action: `Avaliar restringir a faixa etária/gênero para cortar ${x.label}.` });
@@ -436,7 +441,7 @@ async function analyze(sb: SupabaseClient, clientId: string, days: number) {
 
   const sets = cuts.adset ?? [];
   const setWorst = sets.filter((x) => x.share >= 0.1 && (x.index ?? 9) <= 0.7);
-  const setBest = sets.filter((x) => x.result >= 3 && (x.index ?? 0) >= 1.2).slice(0, 2);
+  const setBest = sets.filter((x) => x.result >= 5 && (x.index ?? 0) >= 1.2).slice(0, 2);
   if (setBest.length) insights.push({ area: "Regiões e públicos", text: `Conjuntos mais eficientes: ${setBest.map((x) => `${x.label} (${money(x.cpr ?? 0)})`).join("; ")}.`, action: "Usar essa segmentação como base das próximas campanhas." });
   for (const x of setWorst) insights.push({ area: "Regiões e públicos", text: `${x.label}: ${pct(x.share, 0)} da verba com custo ${x.cpr ? money(x.cpr) : "sem resultado"}.`, action: "Rever cidades/raio desse conjunto ou mover a verba para o conjunto mais eficiente." });
 
@@ -476,12 +481,18 @@ async function aiAnalysis(sb: SupabaseClient, clientId: string, days: number, wh
     leituras_automaticas: a.insights,
     perfil: a.strategy ? { regioes: (a.strategy.regions as Json[] | null)?.map((r) => `${r.name} +${r.radius_km}km`), idade: [a.strategy.age_min, a.strategy.age_max], verba_diaria: a.strategy.daily_budget, notas: a.strategy.notes } : null,
   };
-  const system = `Você é um gestor de tráfego pago sênior (Meta Ads) de uma agência brasileira que atende negócios locais e regionais. ` +
-    `Analise os dados reais abaixo com rigor: cite números, compare com a referência do próprio cliente, aponte causas prováveis e priorize ações pelo impacto em resultado. ` +
-    `Nada de conselhos genéricos: cada recomendação precisa estar amarrada a um número dos dados. Se faltar dado para concluir algo, diga. ` +
-    `Escreva em português do Brasil, direto, como para o dono da agência. Responda SOMENTE com JSON válido no formato: ` +
-    `{"resumo": string (3-4 frases), "nota_saude": number 0-10, "gargalos": [{"titulo": string, "evidencia": string, "causa_provavel": string, "acao": string, "impacto": "alto"|"medio"|"baixo"}], ` +
-    `"oportunidades": [{"titulo": string, "evidencia": string, "acao": string}], "plano_7_dias": [string], "testes": [{"hipotese": string, "como_testar": string, "metrica": string}], ` +
+  const system = `Você é o gestor de tráfego pago sênior (Meta Ads) responsável pelas contas de uma agência brasileira que atende negócios locais e regionais. ` +
+    `O dono da agência vai cuidar de estratégia e relacionamento; você responde pela performance. Seja crítico e rigoroso — não suavize problemas. ` +
+    `Regras: (1) toda afirmação cita números dos dados e compara com a referência de 90 dias do próprio cliente ou com o período anterior; ` +
+    `(2) classifique a confiança de cada conclusão pelo volume de resultados: 30+ = alta, 10–29 = média, menos de 10 = baixa — e com confiança baixa NÃO recomende escalar nem cortar, recomende coletar mais dados; ` +
+    `(3) diferencie variação real de ruído: menos de 15% de diferença com volume pequeno é ruído; ` +
+    `(4) aponte erros de estrutura (verba pulverizada em muitos conjuntos, público pequeno demais, um criativo carregando tudo, posicionamento caro consumindo verba, frequência alta); ` +
+    `(5) se a campanha está ruim, diga claramente e diga o que fazer; se está boa, diga o que pode quebrar; ` +
+    `(6) nada de conselhos genéricos: cada ação diz o que mudar, onde e quanto. Se faltar dado para concluir algo, diga qual dado falta. ` +
+    `Escreva em português do Brasil, direto. Responda SOMENTE com JSON válido no formato: ` +
+    `{"resumo": string (3-4 frases, com o veredito: a conta está saudável, em atenção ou em risco), "nota_saude": number 0-10, ` +
+    `"gargalos": [{"titulo": string, "evidencia": string, "causa_provavel": string, "acao": string, "impacto": "alto"|"medio"|"baixo", "confianca": "alta"|"media"|"baixa"}], ` +
+    `"oportunidades": [{"titulo": string, "evidencia": string, "acao": string, "confianca": "alta"|"media"|"baixa"}], "plano_7_dias": [string], "testes": [{"hipotese": string, "como_testar": string, "metrica": string}], ` +
     `"estrutura_recomendada": {"campanhas": string, "posicionamentos": string, "segmentacao": string, "orcamento": string, "criativos": string}}`;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -582,6 +593,229 @@ async function planLaunch(sb: SupabaseClient, body: Json, _who: string) {
   return { action: row, plan: params, reason };
 }
 
+
+// ================= 5) relatórios automáticos =================
+// Semanal (texto para o grupo do WhatsApp) e mensal (base dos slides). Números vêm do banco e do Meta;
+// o texto ao cliente é direto e verificável; as críticas ficam em "internal", só para a equipe.
+const MONTHS = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"];
+const MON = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+const dm = (iso: string) => `${Number(iso.slice(8))}/${MON[Number(iso.slice(5, 7)) - 1]}`;
+const intBR = (v: number) => Math.round(v).toLocaleString("pt-BR");
+const CLIENT_TXT: Record<Kind, { many: string; one: string; per: string }> = {
+  conversation: { many: "conversas no WhatsApp", one: "conversa", per: "por conversa" },
+  lead: { many: "cadastros (leads)", one: "cadastro", per: "por cadastro" },
+  purchase: { many: "vendas no site", one: "venda", per: "por venda" },
+  click: { many: "cliques no link", one: "clique", per: "por clique" },
+};
+const confidence = (n: number) => (n >= 30 ? "alta" : n >= 10 ? "média" : "baixa");
+
+async function periodReach(accIds: string[], since: string, until: string) {
+  let reach = 0, impressions = 0, ok = true;
+  for (const act of accIds) {
+    try {
+      const r = await graph(`${act}/insights`, { fields: "reach,impressions", time_range: JSON.stringify({ since, until }), ...ATTRIBUTION });
+      const row = ((r.data as Json[]) ?? [])[0];
+      reach += num(row?.reach); impressions += num(row?.impressions);
+    } catch { ok = false; }
+  }
+  return { reach: ok ? reach : null, impressions, frequency: ok && reach ? impressions / reach : null };
+}
+
+async function adsOfPeriod(sb: SupabaseClient, accIds: string[], since: string, until: string, kind: Kind) {
+  const rows = await selectAll<Json>((f) => sb.from("insights_daily").select("object_id, campaign_id, spend, impressions, link_clicks, conversations, leads, purchases, purchase_value")
+    .eq("level", "ad").in("ad_account_id", accIds).gte("date", since).lte("date", until).order("object_id").order("date").range(f, f + 999));
+  const agg = new Map<string, { id: string; spend: number; result: number; impressions: number; clicks: number; value: number }>();
+  for (const r of rows) {
+    const id = r.object_id as string;
+    const e = agg.get(id) ?? { id, spend: 0, result: 0, impressions: 0, clicks: 0, value: 0 };
+    e.spend += num(r.spend); e.impressions += num(r.impressions); e.clicks += num(r.link_clicks); e.value += num(r.purchase_value);
+    e.result += kind === "purchase" ? num(r.purchases) : kind === "conversation" ? num(r.conversations) : kind === "lead" ? num(r.leads) : num(r.link_clicks);
+    agg.set(id, e);
+  }
+  const ids = [...agg.keys()];
+  const info = new Map<string, Json>();
+  for (let i = 0; i < ids.length; i += 200) {
+    const { data } = await sb.from("ads").select("id, name, effective_status, image_url, thumbnail_url, campaign_id, adset_id").in("id", ids.slice(i, i + 200));
+    for (const a of data ?? []) info.set(a.id, a);
+  }
+  return [...agg.values()].filter((x) => x.spend > 0).map((x) => {
+    const a = info.get(x.id) ?? {};
+    return { ...x, name: (a.name as string) ?? "Anúncio", status: (a.effective_status as string) ?? null,
+      image_url: (a.image_url as string) ?? (a.thumbnail_url as string) ?? null, cpr: x.result ? x.spend / x.result : null };
+  }).sort((a, b) => b.result - a.result || (a.cpr ?? 1e9) - (b.cpr ?? 1e9));
+}
+
+async function actionsOfPeriod(sb: SupabaseClient, clientId: string, since: string, until: string) {
+  const { data } = await sb.from("autopilot_actions").select("rule, kind, object_type, object_name, campaign_name, title, evidence, params, result, executed_at, auto")
+    .eq("client_id", clientId).eq("status", "done").gte("executed_at", `${since}T03:00:00Z`).lt("executed_at", `${addDays(until, 1)}T03:00:00Z`)
+    .order("executed_at");
+  return data ?? [];
+}
+
+function actionForClient(a: Json, k: Kind | null): string | null {
+  const K = k ? CLIENT_TXT[k] : null;
+  const ev = (a.evidence as Json) ?? {};
+  const label = a.object_type === "ad" ? "o anúncio" : a.object_type === "adset" ? "o público" : "a campanha";
+  const n = `"${a.object_name}"`;
+  if (a.kind === "pause") {
+    if (a.rule === "pause_no_result" && K) return `Pausamos ${label} ${n}, que gastou ${money(num(ev.gasto))} sem gerar ${K.one}s, para concentrar a verba no que funciona.`;
+    if (a.rule === "pause_expensive" && K) return `Pausamos ${label} ${n} (${money(num(ev.custo))} ${K.per}, acima da média) e passamos a verba para os anúncios mais eficientes.`;
+    return `Pausamos ${label} ${n}.`;
+  }
+  if (a.kind === "activate") return `Reativamos ${label} ${n}.`;
+  if (a.kind === "set_budget") {
+    if (a.rule === "scale_up") return `Aumentamos a verba de ${n}, que estava trazendo resultado abaixo do custo médio.`;
+    if (a.rule === "scale_down") return `Reduzimos a verba de ${n} até o custo voltar à média.`;
+    if (a.rule === "monthly_cap") return `Ajustamos a verba de ${n} para respeitar o investimento do mês.`;
+    return `Ajustamos a verba de ${n}.`;
+  }
+  if (a.kind === "create_ad") return `Colocamos no ar um criativo novo${a.campaign_name ? ` na campanha "${a.campaign_name}"` : ""}.`;
+  if (a.kind === "launch_campaign") return `Lançamos a campanha ${n}.`;
+  return null;
+}
+
+type Note = { level: "alto" | "medio" | "baixo"; text: string };
+
+async function buildReport(sb: SupabaseClient, clientId: string, since: string, until: string, kindOfReport: "weekly" | "monthly") {
+  const a = await analyze(sb, clientId, 7, { since, until });
+  const { data: client } = await sb.from("clients").select("name, objective, monthly_budget, ad_accounts(id, account_status)").eq("id", clientId).single();
+  const accIds = ((client?.ad_accounts as { id: string; account_status: number | null }[]) ?? []).map((x) => x.id);
+  const kind = a.client.kind as Kind | null;
+  const sm = a.summary;
+  if (sm.spend < 1) return null;   // sem investimento no período: não gera relatório
+  const [reach, ads, done, settings, pending] = await Promise.all([
+    periodReach(accIds, since, until),
+    adsOfPeriod(sb, accIds, since, until, kind ?? "click"),
+    actionsOfPeriod(sb, clientId, since, until),
+    sb.from("autopilot_settings").select("target_cost, level").eq("client_id", clientId).maybeSingle().then((r) => r.data),
+    sb.from("autopilot_actions").select("id", { count: "exact", head: true }).eq("client_id", clientId).eq("status", "proposed").then((r) => r.count ?? 0),
+  ]);
+  const K = CLIENT_TXT[kind ?? "click"];
+  const word = kindOfReport === "weekly" ? "semana" : "mês";
+  const prevWord = kindOfReport === "weekly" ? "na semana anterior" : "no mês anterior";
+  const chg = (now: number | null, prev: number | null) => (now !== null && prev ? (now - prev) / prev : null);
+  const resChg = chg(sm.result, sm.prev_result), cprChg = chg(sm.cpr, sm.prev_cpr);
+
+  // ---- texto para o cliente ----
+  const lines: string[] = [];
+  const title = kindOfReport === "weekly" ? "Relatório semanal" : "Relatório mensal";
+  lines.push(`*${title} · ${a.client.name}*`, `${dm(since)} a ${dm(until)}`, "");
+  lines.push(`*Resultados da ${word}*`);
+  lines.push(`• ${intBR(sm.result)} ${K.many}${resChg !== null && Math.abs(resChg) >= 0.03 ? ` (${Math.abs(Math.round(resChg * 100))}% ${resChg > 0 ? "a mais" : "a menos"} que ${prevWord})` : ""}`);
+  if (sm.cpr !== null) lines.push(`• ${money(sm.cpr)} ${K.per}${cprChg !== null && Math.abs(cprChg) >= 0.03 ? ` (${Math.abs(Math.round(cprChg * 100))}% ${cprChg < 0 ? "mais barato" : "mais caro"} que ${prevWord})` : ""}`);
+  if (kind === "purchase" && sm.value > 0) lines.push(`• ${money(sm.value)} em vendas · retorno de ${(sm.roas ?? 0).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}x o investimento`);
+  lines.push(`• ${money(sm.spend)} investidos`);
+  if (reach.reach) lines.push(`• ${intBR(reach.reach)} pessoas alcançadas`);
+
+  const top = ads.filter((x) => x.result > 0)[0];
+  if (top && sm.result > 0 && kind) {
+    const share = top.result / sm.result;
+    lines.push("", "*Destaque*");
+    lines.push(`O anúncio "${top.name}" trouxe ${intBR(top.result)} ${top.result === 1 ? K.one : K.many.split(" ")[0]}${share >= 0.3 && share < 1 ? ` (${Math.round(share * 100)}% do total)` : ""}, a ${money(top.cpr ?? 0)} cada.`);
+  }
+
+  const did = done.map((x) => actionForClient(x, kind)).filter(Boolean) as string[];
+  if (did.length) {
+    lines.push("", "*O que fizemos*");
+    for (const d of did.slice(0, 5)) lines.push(`• ${d}`);
+  }
+
+  const next: string[] = [];
+  const main = a.funnels[0];
+  const bn = main?.bottleneck;
+  if (bn === "hook" || bn === "ctr") next.push("Produzir novos criativos com um começo mais forte para aumentar os cliques.");
+  if (bn === "conv") next.push("Ajustar o texto do anúncio e a primeira mensagem do WhatsApp para transformar mais cliques em conversas.");
+  if (bn === "lead") next.push("Simplificar o formulário para converter mais cliques em cadastros.");
+  if (["lpv", "cart", "checkout", "buy"].includes(bn ?? "")) next.push("Revisar a página e o checkout do site, onde estamos perdendo compradores.");
+  if (cprChg !== null && cprChg > 0.15 && !next.length) next.push("Renovar criativos e revisar a segmentação para trazer o custo de volta.");
+  if ((reach.frequency ?? 0) > (kindOfReport === "weekly" ? 2.5 : 4)) next.push("Trazer criativos novos para o público não se cansar dos mesmos anúncios.");
+  if (cprChg !== null && cprChg < -0.1 && sm.result >= 10) next.push("Aumentar a verba aos poucos nas campanhas mais eficientes.");
+  if (!next.length) next.push("Manter o que está funcionando e seguir testando criativos novos.");
+  lines.push("", "*Próximos passos*");
+  for (const x of [...new Set(next)].slice(0, 3)) lines.push(`• ${x}`);
+  lines.push("", "_Impacto · gestão de tráfego_");
+
+  // ---- críticas internas (rigor: amostra, referência, verba parada, decisões pendentes) ----
+  const notes: Note[] = [];
+  if (!client?.objective || client.objective === "a_definir") notes.push({ level: "medio", text: "Objetivo do cliente não definido: o sistema está deduzindo o resultado. Defina em Configurações para análises e piloto mais precisos." });
+  if (kind && sm.result < 10) notes.push({ level: "medio", text: `Amostra pequena: ${sm.result} ${K.many} no período (confiança ${confidence(sm.result)}). Não decidir escala ou corte só por esse custo.` });
+  if (sm.cpr !== null && sm.bench_cpr && sm.cpr > sm.bench_cpr * 1.25)
+    notes.push({ level: "alto", text: `Custo ${K.per} de ${money(sm.cpr)} está ${Math.round((sm.cpr / sm.bench_cpr - 1) * 100)}% acima da média de 90 dias (${money(sm.bench_cpr)}).` });
+  const target = settings?.target_cost ? Number(settings.target_cost) : null;
+  if (target && sm.cpr !== null && sm.cpr > target * 1.15) notes.push({ level: "alto", text: `Fora da meta: ${money(sm.cpr)} ${K.per} contra a meta de ${money(target)}.` });
+  if (cprChg !== null && cprChg > 0.2 && sm.result >= 10) notes.push({ level: "alto", text: `Custo subiu ${Math.round(cprChg * 100)}% contra o período anterior com volume suficiente para ser real (${sm.result} resultados).` });
+  if (sm.result === 0 && kind) notes.push({ level: "alto", text: `Nenhum resultado com ${money(sm.spend)} investidos. Revisar rastreamento e oferta antes de seguir gastando.` });
+  for (const f of a.funnels.filter((x) => sm.spend && x.spend / sm.spend >= 0.15)) for (const i of f.issues) notes.push({ level: "medio", text: `${f.name}: ${i.text} → ${i.fixes[0] ?? ""}` });
+  const ref = sm.cpr ?? sm.bench_cpr;
+  for (const ad of ads.filter((x) => x.result === 0 && x.status === "ACTIVE" && x.spend >= Math.max(20, 2 * (ref ?? 15))).slice(0, 3))
+    notes.push({ level: "alto", text: `Anúncio "${ad.name}" gastou ${money(ad.spend)} sem nenhum resultado e continua ativo.` });
+  if (top && sm.result >= 5 && top.result / sm.result >= 0.7) notes.push({ level: "medio", text: `Dependência de um criativo: "${top.name}" fez ${Math.round((top.result / sm.result) * 100)}% dos resultados. Se ele cansar, o custo sobe — prepare substitutos.` });
+  if (kindOfReport === "weekly" && client?.monthly_budget) {
+    const today = brDate(0), m0 = `${today.slice(0, 7)}-01`;
+    const { data: ms } = await sb.from("insights_daily").select("spend").eq("level", "account").in("object_id", accIds).gte("date", m0).lte("date", until);
+    const spent = (ms ?? []).reduce((t, r) => t + num(r.spend), 0);
+    const [y, m] = today.split("-").map(Number);
+    const dim = new Date(Date.UTC(y, m, 0)).getUTCDate(), elapsed = Number(until.slice(8)) || 1;
+    const pace = spent / (Number(client.monthly_budget) * (elapsed / dim));
+    if (until.slice(0, 7) === today.slice(0, 7) && (pace > 1.1 || pace < 0.7))
+      notes.push({ level: "medio", text: `Ritmo de verba: ${money(spent)} gastos até ${dm(until)}, ${Math.round(pace * 100)}% do esperado para o orçamento de ${money(Number(client.monthly_budget))} no mês.` });
+  }
+  if (pending) notes.push({ level: "medio", text: `${pending} decisão(ões) do piloto aguardando aprovação.` });
+  if (kind === "conversation") notes.push({ level: "baixo", text: "Conversas não são vendas: confirme com o cliente quantas viraram venda para validar o custo por conversa." });
+  if (!done.length && kindOfReport === "weekly") notes.push({ level: "baixo", text: "Nenhuma otimização executada na semana. Confirme se as campanhas estão saudáveis ou se o piloto está em modo só sugestão." });
+  const order = { alto: 0, medio: 1, baixo: 2 };
+  notes.sort((x, y) => order[x.level] - order[y.level]);
+
+  const data: Json = {
+    summary: { ...sm, reach: reach.reach, frequency: reach.frequency, period_impressions: reach.impressions, confidence: confidence(sm.result) },
+    kind, ads: ads.slice(0, 12), actions: done, next,
+  };
+  if (kindOfReport === "monthly") {
+    // série diária e análise completa: base dos slides
+    const daily = await selectAll<Json>((f) => sb.from("insights_daily").select("date, spend, impressions, link_clicks, conversations, leads, purchases, purchase_value")
+      .eq("level", "account").in("object_id", accIds).gte("date", since).lte("date", until).order("date").range(f, f + 999));
+    const byDay = new Map<string, Json>();
+    for (const r of daily) {
+      const e = byDay.get(r.date as string) ?? { date: r.date, spend: 0, impressions: 0, link_clicks: 0, conversations: 0, leads: 0, purchases: 0, purchase_value: 0 };
+      for (const k of ["spend", "impressions", "link_clicks", "conversations", "leads", "purchases", "purchase_value"]) e[k] = num(e[k]) + num(r[k]);
+      byDay.set(r.date as string, e);
+    }
+    data.daily = [...byDay.values()];
+    data.analysis = a;
+  }
+  return { text: lines.join("\n"), internal: notes, data };
+}
+
+async function runReports(sb: SupabaseClient, kindOfReport: "weekly" | "monthly", who: string, clientId?: string, range?: { since: string; until: string }) {
+  let since: string, until: string;
+  if (range) ({ since, until } = range);
+  else if (kindOfReport === "weekly") { until = brDate(-1); since = addDays(until, -6); }
+  else {
+    const t = brDate(0);
+    const firstThis = `${t.slice(0, 7)}-01`;
+    until = addDays(firstThis, -1); since = `${until.slice(0, 7)}-01`;
+  }
+  let q = sb.from("clients").select("id, name").eq("active", true);
+  if (clientId) q = q.eq("id", clientId);
+  const { data: clients } = await q;
+  const out: Json[] = [];
+  const list = clients ?? [];
+  for (let i = 0; i < list.length; i += 4) {
+    await Promise.all(list.slice(i, i + 4).map(async (c) => {
+      try {
+        const r = await buildReport(sb, c.id, since, until, kindOfReport);
+        if (!r) { out.push({ client: c.name, skipped: "sem investimento" }); return; }
+        const { data, error } = await sb.from("client_reports").upsert({ client_id: c.id, kind: kindOfReport, since, until, text: r.text,
+          internal: r.internal, data: r.data, created_at: nowIso(), created_by: who, sent_at: null, sent_by: null }, { onConflict: "client_id,kind,since,until" })
+          .select("id").single();
+        if (error) throw new Error(error.message);
+        out.push({ client: c.name, id: data.id, alerts: r.internal.filter((n) => n.level === "alto").length });
+      } catch (e) { out.push({ client: c.name, error: e instanceof Error ? e.message : String(e) }); }
+    }));
+  }
+  return { kind: kindOfReport, since, until, reports: out };
+}
+
 // ---------------- handler ----------------
 const CORS = {
   "access-control-allow-origin": "*",
@@ -619,6 +853,8 @@ Deno.serve(async (req) => {
         return reply({ data: ((r.data as Json[]) ?? []).map((c) => ({ key: c.key, name: c.name, region: c.region, country: c.country_code })) });
       }
       case "plan_launch": return reply(await planLaunch(sb, body, who));
+      case "weekly_reports": return reply(await runReports(sb, "weekly", who, body.client_id, body.since ? { since: body.since, until: body.until } : undefined));
+      case "monthly_reports": return reply(await runReports(sb, "monthly", who, body.client_id, body.since ? { since: body.since, until: body.until } : undefined));
       case "images64": {
         // imagens dos criativos para o relatório em slides (o navegador não pode baixá-las direto do Meta)
         const urls = (Array.isArray(body.urls) ? body.urls : []).slice(0, 12).map(String).filter((u: string) => /^https:\/\/[^/]*(fbcdn\.net|facebook\.com|supabase\.co)\//.test(u));

@@ -41,7 +41,11 @@ export interface AutopilotSettings {
 export interface CreativeAsset {
   id: string;
   client_id: string;
-  drive_file_id: string;
+  drive_file_id: string | null;
+  source?: "drive" | "upload" | "instagram";
+  caption?: string | null;
+  used_at?: string | null;
+  auto_place?: boolean;
   name: string;
   mime_type: string | null;
   kind: "image" | "video";
@@ -53,19 +57,19 @@ export interface CreativeAsset {
   web_view_link: string | null;
   folder_name: string | null;
   drive_modified_at: string | null;
-  meta: Record<string, { image_hash?: string; video_id?: string; sent_at?: string; upload?: unknown }>;
+  meta: Record<string, { image_hash?: string; video_id?: string; ig_media_id?: string; sent_at?: string; upload?: unknown }>;
   removed: boolean;
 }
 
 export interface DriveStatus { configured: boolean; connected: boolean; email?: string | null; root_link?: string | null }
 
 export interface AdsetOption {
-  id: string; name: string | null; effective_status: string | null; ad_account_id: string;
+  id: string; name: string | null; effective_status: string | null; ad_account_id: string; campaign_id?: string;
   campaign_name: string | null; campaign_status: string | null;
   ads: { id: string; name: string | null; effective_status: string | null; format: string | null }[];
 }
 
-async function call<T>(fn: "autopilot" | "drive", body: Record<string, unknown>): Promise<T> {
+async function call<T>(fn: "autopilot" | "drive" | "creatives", body: Record<string, unknown>): Promise<T> {
   const { data: s } = await supabase.auth.getSession();
   const res = await fetch(`${FUNCTIONS_URL}/${fn}`, {
     method: "POST",
@@ -175,10 +179,10 @@ export async function uploadToDrive(clientId: string, file: File, onProgress: (p
 }
 
 // Vídeos grandes vão em várias etapas: chama até concluir
-export async function sendToMeta(assetId: string, accountId: string, onProgress?: (p: number) => void) {
+export async function sendToMeta(assetId: string, accountId: string, onProgress?: (p: number) => void, source: string = "drive") {
   if (DEMO) { await wait(800); const a = demoAssets.find((x) => x.id === assetId)!; a.meta = { ...a.meta, [accountId]: { image_hash: "demo", sent_at: new Date().toISOString() } }; return; }
   for (let i = 0; i < 40; i++) {
-    const r = await call<{ done: boolean; progress?: number }>("drive", { action: "send_to_meta", asset_id: assetId, ad_account_id: accountId });
+    const r = await call<{ done: boolean; progress?: number }>(source === "drive" ? "drive" : "creatives", { action: "send_to_meta", asset_id: assetId, ad_account_id: accountId });
     if (r.done) return;
     onProgress?.(r.progress ?? 0);
   }
@@ -187,18 +191,19 @@ export async function sendToMeta(assetId: string, accountId: string, onProgress?
 
 export async function getClientAdsets(clientId: string): Promise<AdsetOption[]> {
   if (DEMO) return demoAdsets;
-  const [s, a] = await Promise.all([
-    supabase.from("adsets").select("id, name, effective_status, ad_account_id, campaign_id, campaigns(name, effective_status), ad_accounts!inner(client_id)")
-      .eq("ad_accounts.client_id", clientId),
+  const [s, a, c] = await Promise.all([
+    supabase.from("adsets").select("id, name, effective_status, ad_account_id, campaign_id, ad_accounts!inner(client_id)").eq("ad_accounts.client_id", clientId),
     supabase.from("ads").select("id, name, effective_status, format, adset_id, ad_accounts!inner(client_id)").eq("ad_accounts.client_id", clientId),
+    supabase.from("campaigns").select("id, name, effective_status, ad_accounts!inner(client_id)").eq("ad_accounts.client_id", clientId),
   ]);
   if (s.error) throw new Error(s.error.message);
   const ads = (a.data ?? []) as unknown as { id: string; name: string | null; effective_status: string | null; format: string | null; adset_id: string }[];
+  const camps = new Map(((c.data ?? []) as { id: string; name: string; effective_status: string }[]).map((x) => [x.id, x]));
   const rank = (st: string | null) => (st === "ACTIVE" ? 0 : 1);
-  return ((s.data ?? []) as unknown as (Omit<AdsetOption, "ads" | "campaign_name" | "campaign_status"> & { campaigns: { name: string; effective_status: string } | null })[])
+  return ((s.data ?? []) as unknown as (Omit<AdsetOption, "ads" | "campaign_name" | "campaign_status"> & { campaign_id: string })[])
     .map((x) => ({
-      id: x.id, name: x.name, effective_status: x.effective_status, ad_account_id: x.ad_account_id,
-      campaign_name: x.campaigns?.name ?? null, campaign_status: x.campaigns?.effective_status ?? null,
+      id: x.id, name: x.name, effective_status: x.effective_status, ad_account_id: x.ad_account_id, campaign_id: x.campaign_id,
+      campaign_name: camps.get(x.campaign_id)?.name ?? null, campaign_status: camps.get(x.campaign_id)?.effective_status ?? null,
       ads: ads.filter((ad) => ad.adset_id === x.id).sort((p, q) => rank(p.effective_status) - rank(q.effective_status)),
     }))
     .filter((x) => x.ads.length > 0)
@@ -250,6 +255,6 @@ const demoAssets: CreativeAsset[] = [
     drive_modified_at: ago(50), meta: {}, removed: false },
 ];
 const demoAdsets: AdsetOption[] = [
-  { id: "s1", name: "Uruguaiana 30–60 — Advantage+", effective_status: "ACTIVE", ad_account_id: "act_2", campaign_name: "[CONV] Coluna — WhatsApp — Uruguaiana",
+  { id: "s1", name: "Uruguaiana 30–60 — Advantage+", effective_status: "ACTIVE", ad_account_id: "act_2", campaign_id: "c1", campaign_name: "[CONV] Coluna — WhatsApp — Uruguaiana",
     campaign_status: "ACTIVE", ads: [{ id: "a1", name: "Vídeo — dor no ciático", effective_status: "ACTIVE", format: "video" }, { id: "a2", name: "Imagem — avaliação", effective_status: "PAUSED", format: "imagem" }] },
 ];

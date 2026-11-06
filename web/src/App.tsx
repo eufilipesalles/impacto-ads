@@ -11,7 +11,8 @@ import { AlertsPage } from "./pages/Alerts";
 import { SettingsPage } from "./pages/Settings";
 import { ClientsPage } from "./pages/Clients";
 import { AccountPage } from "./pages/Account";
-import { ReportsPage } from "./pages/Reports";
+import { ReportsHub } from "./pages/ReportsHub";
+import { ManagerPage } from "./pages/Manager";
 import { CreativesPage } from "./pages/Creatives";
 import { AutopilotPage } from "./pages/Autopilot";
 import { MaterialsPage } from "./pages/Materials";
@@ -57,7 +58,8 @@ export default function App() {
           <Route path="materiais" element={<MaterialsPage />} />
           <Route path="piloto" element={<AutopilotPage />} />
           <Route path="estrategia" element={<StrategyPage />} />
-          <Route path="relatorios" element={<ReportsPage />} />
+          <Route path="relatorios" element={<ReportsHub />} />
+          <Route path="gerenciador" element={<ManagerPage />} />
           <Route path="alertas" element={<AlertsPage />} />
           <Route path="configuracoes" element={<SettingsPage />} />
           <Route path="conta" element={<AccountPage email={email} />} />
