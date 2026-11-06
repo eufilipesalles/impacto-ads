@@ -827,7 +827,7 @@ const reply = (body: unknown, status = 200) => Response.json(body, { status, hea
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
-  let who = "sistema", readOnly = false;
+  let who = "sistema", readOnly = false, reports = false;
   const cronHeader = req.headers.get("x-cron-secret");
   const { data: cronOk } = cronHeader ? await sb.rpc("check_cron_secret", { s: cronHeader }) : { data: false };
   if (!cronOk) {
@@ -838,14 +838,15 @@ Deno.serve(async (req) => {
     const { data: member } = await sb.from("team_members").select("email").eq("email", email).maybeSingle();
     if (!member) {
       // time de copy: só leitura (análise, raio-x, IA e imagens dos slides)
-      const { data: viewer } = await sb.from("team_viewers").select("email").eq("email", email).maybeSingle();
+      const { data: viewer } = await sb.from("team_viewers").select("email, areas").eq("email", email).maybeSingle();
       if (!viewer) return reply({ error: "Este e-mail não faz parte da equipe Impacto" }, 403);
       readOnly = true;
+      reports = ((viewer.areas as string[] | null) ?? []).includes("relatorios");
     }
     who = data.user.email ?? data.user.id;
   }
   const body = await req.json().catch(() => ({}));
-  if (readOnly && !["analyze", "ai", "ai_status", "images64", "collect"].includes(body.action))
+  if (readOnly && !["analyze", "ai", "ai_status", "images64", "collect", ...(reports ? ["weekly_reports", "monthly_reports"] : [])].includes(body.action))
     return reply({ error: "Seu acesso é só de leitura (Criativos e Estratégia)." }, 403);
   const days = Math.min(Math.max(Number(body.days) || 14, 3), 60);
   try {

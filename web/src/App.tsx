@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { DEMO, supabase } from "./lib/supabase";
-import { getRole, type Role } from "./lib/api";
-import { RoleContext } from "./lib/role";
+import { getRole, type Access } from "./lib/api";
+import { AccessContext } from "./lib/role";
 import { Layout } from "./components/Layout";
 import { Login } from "./components/Login";
 import { Today } from "./pages/Today";
@@ -21,7 +21,8 @@ import { StrategyPage } from "./pages/Strategy";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(DEMO ? null : undefined);
-  const [role, setRole] = useState<Role | null | undefined>(undefined);
+  const [access, setRole] = useState<Access | null | undefined>(undefined);
+  const role = access === undefined ? undefined : access?.role ?? null;
   const member = role === undefined ? null : !!role;
 
   useEffect(() => {
@@ -51,26 +52,29 @@ export default function App() {
   }
 
   const email = DEMO ? "demonstração" : session?.user.email ?? "";
-  const q = DEMO ? `?demo${role === "copy" ? "&copy" : ""}` : "";
-  if (role === "copy") {
-    // time de copy: só Criativos e Estratégia (o resto nem existe nas rotas)
+  const q = DEMO ? window.location.search : "";
+  if (access && access.role === "copy") {
+    // acesso restrito: só as áreas liberadas existem nas rotas
+    const has = (a: string) => access.areas.includes(a);
+    const home = has("criativos") ? "criativos" : access.areas[0] ?? "conta";
     return (
-      <RoleContext.Provider value="copy">
+      <AccessContext.Provider value={access}>
         <BrowserRouter>
           <Routes>
             <Route element={<Layout email={email} />}>
-              <Route path="criativos" element={<CreativesPage />} />
-              <Route path="estrategia" element={<StrategyPage />} />
+              {has("criativos") && <Route path="criativos" element={<CreativesPage />} />}
+              {has("estrategia") && <Route path="estrategia" element={<StrategyPage />} />}
+              {has("relatorios") && <Route path="relatorios" element={<ReportsHub />} />}
               <Route path="conta" element={<AccountPage email={email} />} />
-              <Route path="*" element={<Navigate to={`/criativos${q}`} replace />} />
+              <Route path="*" element={<Navigate to={`/${home}${q}`} replace />} />
             </Route>
           </Routes>
         </BrowserRouter>
-      </RoleContext.Provider>
+      </AccessContext.Provider>
     );
   }
   return (
-    <RoleContext.Provider value="admin">
+    <AccessContext.Provider value={{ role: "admin", areas: [] }}>
     <BrowserRouter>
       <Routes>
         <Route element={<Layout email={email} />}>
@@ -89,6 +93,6 @@ export default function App() {
         </Route>
       </Routes>
     </BrowserRouter>
-    </RoleContext.Provider>
+    </AccessContext.Provider>
   );
 }

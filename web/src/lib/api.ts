@@ -176,12 +176,19 @@ export async function createNewClient(input: {
   return created.id;
 }
 
-// "admin" = equipe completa; "copy" = só leitura de Criativos e Estratégia
+// "admin" = equipe completa; "copy" = acesso restrito às áreas liberadas (criativos, estrategia, relatorios)
 export type Role = "admin" | "copy";
-export async function getRole(): Promise<Role | null> {
-  if (DEMO) return new URLSearchParams(window.location.search).has("copy") ? "copy" : "admin";
-  const [m, v] = await Promise.all([supabase.rpc("is_team_member"), supabase.rpc("is_viewer")]);
-  return m.data === true ? "admin" : v.data === true ? "copy" : null;
+export interface Access { role: Role; areas: string[] }
+export async function getRole(): Promise<Access | null> {
+  if (DEMO) {
+    const q = new URLSearchParams(window.location.search);
+    if (!q.has("copy")) return { role: "admin", areas: [] };
+    return { role: "copy", areas: ["criativos", "estrategia", ...(q.has("rel") ? ["relatorios"] : [])] };
+  }
+  const { data: m } = await supabase.rpc("is_team_member");
+  if (m === true) return { role: "admin", areas: [] };
+  const { data: v } = await supabase.from("team_viewers").select("areas").maybeSingle();
+  return v ? { role: "copy", areas: (v.areas as string[]) ?? [] } : null;
 }
 
 export async function isTeamMember(): Promise<boolean> {

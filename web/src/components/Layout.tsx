@@ -2,7 +2,7 @@ import { NavLink, Outlet } from "react-router-dom";
 import { supabase, DEMO } from "../lib/supabase";
 import { useAsync } from "../lib/hooks";
 import { getAlerts } from "../lib/api";
-import { COPY_PAGES, useRole } from "../lib/role";
+import { pagesOf, useAccess } from "../lib/role";
 
 export function BrandMark() {
   return (
@@ -16,10 +16,11 @@ export function BrandMark() {
 }
 
 export function Layout({ email }: { email: string }) {
-  const role = useRole();
+  const access = useAccess();
+  const role = access.role;
   const { data: alerts } = useAsync(() => (role === "copy" ? Promise.resolve([]) : getAlerts("open")), [role]);
   const critical = (alerts ?? []).filter((a) => a.severity === "critical").length;
-  const q = DEMO ? `?demo${role === "copy" ? "&copy" : ""}` : "";
+  const q = DEMO ? window.location.search.replace(/[&?](cliente|aba|dias)=[^&]*/g, "") : "";
   const all = [
     { to: `/${q}`, label: "Hoje", end: true },
     { to: `/clientes${q}`, label: "Clientes" },
@@ -32,7 +33,7 @@ export function Layout({ email }: { email: string }) {
     { to: `/alertas${q}`, label: "Alertas", badge: critical },
     { to: `/configuracoes${q}`, label: "Configurações" },
   ];
-  const links = role === "copy" ? all.filter((l) => COPY_PAGES.includes(l.to.split(/[/?]/)[1])) : all;
+  const links = role === "copy" ? all.filter((l) => pagesOf(access).includes(l.to.split(/[/?]/)[1])) : all;
 
   return (
     <div className="shell">
