@@ -559,7 +559,7 @@ Deno.serve(async (req) => {
   });
 
   // Autorização: cron (segredo) ou usuário da equipe logado no painel
-  let trigger = "cron";
+  let trigger = "cron", readOnly = false;
   const cronHeader = req.headers.get("x-cron-secret");
   const { data: cronOk } = cronHeader
     ? await sb.rpc("check_cron_secret", { s: cronHeader })
@@ -568,9 +568,14 @@ Deno.serve(async (req) => {
     const jwt = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
     const { data } = jwt ? await sb.auth.getUser(jwt) : { data: { user: null } };
     if (!data.user) return reply({ error: "não autorizado" }, 401);
-    const { data: member } = await sb.from("team_members").select("email")
-      .eq("email", (data.user.email ?? "").toLowerCase()).maybeSingle();
-    if (!member) return reply({ error: "Este e-mail não faz parte da equipe Impacto" }, 403);
+    const email = (data.user.email ?? "").toLowerCase();
+    const { data: member } = await sb.from("team_members").select("email").eq("email", email).maybeSingle();
+    if (!member) {
+      // time de copy: só a prévia dos anúncios (página Criativos)
+      const { data: viewer } = await sb.from("team_viewers").select("email").eq("email", email).maybeSingle();
+      if (!viewer) return reply({ error: "Este e-mail não faz parte da equipe Impacto" }, 403);
+      readOnly = true;
+    }
     trigger = `manual:${data.user.email ?? data.user.id}`;
   }
   if (!TOKEN) return reply({ error: "META_ACCESS_TOKEN não configurado" }, 500);
@@ -579,6 +584,7 @@ Deno.serve(async (req) => {
   }
 
   const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+  if (readOnly && body.action !== "media") return reply({ error: "Seu acesso é só de leitura (Criativos e Estratégia)." }, 403);
 
   if (body.action === "period") {
     try {

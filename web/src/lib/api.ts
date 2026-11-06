@@ -176,6 +176,14 @@ export async function createNewClient(input: {
   return created.id;
 }
 
+// "admin" = equipe completa; "copy" = só leitura de Criativos e Estratégia
+export type Role = "admin" | "copy";
+export async function getRole(): Promise<Role | null> {
+  if (DEMO) return new URLSearchParams(window.location.search).has("copy") ? "copy" : "admin";
+  const [m, v] = await Promise.all([supabase.rpc("is_team_member"), supabase.rpc("is_viewer")]);
+  return m.data === true ? "admin" : v.data === true ? "copy" : null;
+}
+
 export async function isTeamMember(): Promise<boolean> {
   if (DEMO) return true;
   const { data } = await supabase.rpc("is_team_member");

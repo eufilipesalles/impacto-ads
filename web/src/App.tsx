@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { DEMO, supabase } from "./lib/supabase";
-import { isTeamMember } from "./lib/api";
+import { getRole, type Role } from "./lib/api";
+import { RoleContext } from "./lib/role";
 import { Layout } from "./components/Layout";
 import { Login } from "./components/Login";
 import { Today } from "./pages/Today";
@@ -20,7 +21,8 @@ import { StrategyPage } from "./pages/Strategy";
 
 export default function App() {
   const [session, setSession] = useState<Session | null | undefined>(DEMO ? null : undefined);
-  const [member, setMember] = useState<boolean | null>(DEMO ? true : null);
+  const [role, setRole] = useState<Role | null | undefined>(undefined);
+  const member = role === undefined ? null : !!role;
 
   useEffect(() => {
     if (DEMO) return;
@@ -32,14 +34,16 @@ export default function App() {
   const [denied, setDenied] = useState(false);
 
   useEffect(() => {
-    if (DEMO || !session) return;
-    setMember(null);
-    isTeamMember().then((ok) => {
-      setMember(ok);
-      if (!ok) { setDenied(true); supabase.auth.signOut(); }
+    if (DEMO) { getRole().then(setRole); return; }
+    if (!session) return;
+    setRole(undefined);
+    getRole().then((r) => {
+      setRole(r);
+      if (!r) { setDenied(true); supabase.auth.signOut(); }
     });
   }, [session]);
 
+  if (DEMO && role === undefined) return <div className="main loading">Carregando…</div>;
   if (!DEMO) {
     if (session === undefined) return <div className="main loading">Carregando…</div>;
     if (!session) return <Login notice={denied ? "Este e-mail não faz parte da equipe Impacto. Peça para ser adicionado." : undefined} />;
@@ -47,7 +51,26 @@ export default function App() {
   }
 
   const email = DEMO ? "demonstração" : session?.user.email ?? "";
+  const q = DEMO ? `?demo${role === "copy" ? "&copy" : ""}` : "";
+  if (role === "copy") {
+    // time de copy: só Criativos e Estratégia (o resto nem existe nas rotas)
+    return (
+      <RoleContext.Provider value="copy">
+        <BrowserRouter>
+          <Routes>
+            <Route element={<Layout email={email} />}>
+              <Route path="criativos" element={<CreativesPage />} />
+              <Route path="estrategia" element={<StrategyPage />} />
+              <Route path="conta" element={<AccountPage email={email} />} />
+              <Route path="*" element={<Navigate to={`/criativos${q}`} replace />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </RoleContext.Provider>
+    );
+  }
   return (
+    <RoleContext.Provider value="admin">
     <BrowserRouter>
       <Routes>
         <Route element={<Layout email={email} />}>
@@ -66,5 +89,6 @@ export default function App() {
         </Route>
       </Routes>
     </BrowserRouter>
+    </RoleContext.Provider>
   );
 }

@@ -7,6 +7,7 @@ import { scoreCreatives } from "../lib/creative";
 import { decideAction } from "../lib/autopilot";
 import { getLibrary, driveStatus, type CreativeAsset } from "../lib/autopilot";
 import { DEMO } from "../lib/supabase";
+import { useRole } from "../lib/role";
 import {
   aiEnabled, getAnalysis, getClientCampaignsList, getStrategy, images64, lastAi, planLaunch, refreshXray, runAi, saveStrategy, searchCities,
   type Analysis, type ClientStrategy, type Cut, type Funnel, type Kind, type Region,
@@ -288,6 +289,7 @@ function LaunchPanel({ clientId, onDone }: { clientId: string; onDone: (msg: str
 }
 
 export function StrategyPage() {
+  const role = useRole();
   const [params, setParams] = useSearchParams();
   const clientId = params.get("cliente") ?? "";
   const days = Number(params.get("dias")) || 14;
@@ -453,6 +455,7 @@ export function StrategyPage() {
             </div>
           </section>
 
+          {role === "admin" && (<>
           <section className="section">
             <div className="section-head"><h2>Perfil de campanha</h2><span className="hint">onde e para quem as novas campanhas vão rodar</span></div>
             <ProfileEditor clientId={clientId} onSaved={() => setReload((x) => x + 1)} />
@@ -462,6 +465,7 @@ export function StrategyPage() {
             <div className="section-head"><h2>Lançar nova campanha</h2><span className="hint">entra no histórico do Piloto automático e pode ser desfeita</span></div>
             <LaunchPanel clientId={clientId} onDone={flash} />
           </section>
+          </>)}
         </>
       )}
       {toast && <div className="toast" role="status">{toast}</div>}
