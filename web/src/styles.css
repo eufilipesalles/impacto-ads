@@ -513,3 +513,29 @@ b.good, .part-top b.good { color: var(--ok); } b.bad, .part-top b.bad { color: v
 .tbl-left td, .tbl-left th { text-align: left; }
 .mat-link { display: block; color: var(--ink); text-decoration: none; }
 .mat-link:hover { text-decoration: underline; }
+
+/* ---------- Mídia dos criativos em alta resolução ---------- */
+.cr-thumb { aspect-ratio: 4 / 5; background: #111; }
+.cr-thumb .media-bg, .dr-stage .media-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(18px) brightness(.55); transform: scale(1.15); }
+.cr-thumb .media-fg { position: relative; width: 100%; height: 100%; object-fit: contain; }
+.cr-thumb > span:not(.media-play) { color: #8a8580; }
+.media-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+  background: rgba(11,11,12,.6); color: #fff; font-size: 16px; padding-left: 3px; pointer-events: none; }
+.dr-head { grid-template-columns: minmax(0, 1fr) auto; }
+.dr-media { background: #0b0b0c; padding: 0 20px 16px; }
+.dr-stage { position: relative; overflow: hidden; border-radius: 10px; background: #111; height: min(62vh, 640px); display: grid; place-items: center; }
+.dr-stage .media-fg { position: relative; max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.dr-stage video.media-fg { width: 100%; height: 100%; }
+.dr-loading { position: absolute; bottom: 10px; left: 12px; font: 12px var(--mono); color: #d8d4cf; }
+.dr-media-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.dr-media-foot .help { color: #b5b1ac; margin: 0; }
+.dr-media-foot a.btn { text-decoration: none; margin-left: auto; }
+@media (max-width: 760px) {
+  .dr-head { grid-template-columns: minmax(0, 1fr); }
+  .dr-stage { height: 56vh; }
+}
+.dr-tabs { display: flex; gap: 6px; padding: 0 0 12px; overflow-x: auto; scrollbar-width: none; }
+.dr-tabs button { flex: none; background: #1f1f22; color: #d8d4cf; border: 1px solid #333; border-radius: 999px; padding: 6px 12px; font: 500 13px var(--body); cursor: pointer; }
+.dr-tabs button.on { background: var(--orange); border-color: var(--orange); color: #fff; }
+.dr-stage.frame { height: auto; min-height: 420px; background: #f0efed; padding: 16px 0; overflow: auto; align-items: start; }
+.dr-stage iframe { width: min(420px, 100%); border: 0; border-radius: 8px; background: #fff; display: block; margin: 0 auto; }

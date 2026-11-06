@@ -1,6 +1,7 @@
 // Impacto Ads — meta-sync
 // 1) action "sync"   (padrão): coleta as contas no Meta, grava no banco e avalia os alertas.
 // 3) action "balances": atualiza só saldo e status das contas (leve; roda de hora em hora).
+// 4) action "media": prévias oficiais do anúncio (Feed, Reels, Stories) para ver o criativo no painel.
 // 2) action "period": totais de um período consultados AO VIVO no Meta (mesma base do Gerenciador
 //    de Anúncios), com o saldo da conta no momento e os totais gravados no painel para conferência.
 //
@@ -218,6 +219,53 @@ function creativeInfo(ad: Json) {
   };
 }
 
+// ---------------- mídia em alta resolução ----------------
+// A miniatura padrão do Meta é pequena (64–130 px). Para o time de criação ver o criativo de verdade:
+// imagens → URL original da imagem (pelo hash); vídeos → quadro de capa em tamanho real.
+function imageHashes(ad: Json): string[] {
+  const cr = (ad.creative as Json | undefined) ?? {};
+  const story = (cr.object_story_spec as Json | undefined) ?? {};
+  const link = (story.link_data as Json | undefined) ?? {};
+  const feed = (cr.asset_feed_spec as Json | undefined) ?? {};
+  const out: string[] = [];
+  if (link.image_hash) out.push(link.image_hash as string);
+  for (const c of (link.child_attachments as Json[] | undefined) ?? []) if (c.image_hash) out.push(c.image_hash as string);
+  for (const i of (feed.images as Json[] | undefined) ?? []) if (i.hash) out.push(i.hash as string);
+  if (cr.image_hash) out.push(cr.image_hash as string);
+  return out;
+}
+
+async function hdMedia(act: string, ads: Json[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const info = ads.map((a) => ({ id: a.id as string, creative: ((a.creative as Json | undefined)?.id as string) ?? null, hashes: imageHashes(a) }));
+
+  // Imagens: arquivo original pelo hash (melhor qualidade possível)
+  const hashes = [...new Set(info.flatMap((x) => x.hashes))];
+  const img = new Map<string, string>();
+  for (let i = 0; i < hashes.length; i += 50) {
+    try {
+      const res = await graph(`${act}/adimages`, { hashes: JSON.stringify(hashes.slice(i, i + 50)), fields: "hash,url,width,height" });
+      for (const r of (res.data as Json[]) ?? []) if (r.url) img.set(r.hash as string, r.url as string);
+    } catch { /* fica a próxima opção */ }
+  }
+
+  // Vídeos e posts: capa do criativo pedida em 1080 px (só precisa da permissão de anúncios)
+  const creatives = [...new Set(info.map((x) => x.creative).filter(Boolean) as string[])];
+  const cover = new Map<string, string>();
+  for (let i = 0; i < creatives.length; i += 50) {
+    try {
+      const res = await graph("", { ids: creatives.slice(i, i + 50).join(","), fields: "thumbnail_url", thumbnail_width: "1080", thumbnail_height: "1080" });
+      for (const [cid, v] of Object.entries(res as Record<string, Json>)) if (v.thumbnail_url) cover.set(cid, v.thumbnail_url as string);
+    } catch { /* idem */ }
+  }
+
+  for (const x of info) {
+    const url = x.hashes.map((h) => img.get(h)).find(Boolean) || (x.creative ? cover.get(x.creative) : undefined);
+    if (url) out.set(x.id, url);
+  }
+  return out;
+}
+
 // ---------------- sincronização de uma conta ----------------
 async function syncAccount(sb: SupabaseClient, act: string, since: string, until: string) {
   const timeRange = JSON.stringify({ since, until });
@@ -241,7 +289,7 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
   });
   const ads = await graphAll(`${act}/ads`, {
     fields: "id,name,status,effective_status,campaign_id,adset_id,issues_info,ad_review_feedback,created_time,preview_shareable_link," +
-      "creative{id,object_type,body,title,thumbnail_url,image_url,video_id,call_to_action_type,object_story_spec,asset_feed_spec," +
+      "creative{id,object_type,body,title,thumbnail_url,image_url,image_hash,video_id,call_to_action_type,object_story_spec,asset_feed_spec," +
       "instagram_permalink_url,effective_object_story_id}",
     thumbnail_width: "480", thumbnail_height: "480", limit: "100",
     filtering: notArchived,
@@ -261,6 +309,7 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
     fields: "ad_id,frequency,quality_ranking,engagement_rate_ranking,conversion_rate_ranking",
   }).catch(() => [] as Json[]);
   const rankBy = new Map(ranks.map((r) => [r.ad_id as string, r]));
+  const hd = await hdMedia(act, ads).catch(() => new Map<string, string>());
   const rk = (v: unknown) => (typeof v === "string" && v !== "UNKNOWN" ? v.toLowerCase() : null);
 
   // 4) Gravação
@@ -304,6 +353,7 @@ async function syncAccount(sb: SupabaseClient, act: string, since: string, until
       issues: a.issues_info || a.ad_review_feedback
         ? { issues_info: a.issues_info ?? null, review: a.ad_review_feedback ?? null } : null,
       ...creativeInfo(a),
+      ...(hd.get(a.id as string) ? { image_url: hd.get(a.id as string) } : {}),
       quality_ranking: rk(r?.quality_ranking), engagement_ranking: rk(r?.engagement_rate_ranking),
       conversion_ranking: rk(r?.conversion_rate_ranking), freq_7d: r?.frequency ? Number(r.frequency) : null,
       rankings_updated_at: now, updated_at: now,
@@ -540,6 +590,23 @@ Deno.serve(async (req) => {
   }
 
   if (body.action === "balances") return reply(await refreshBalances(sb));
+
+  // Prévia oficial do anúncio (a mesma do Gerenciador), com o vídeo tocando; o link vale por algumas horas
+  if (body.action === "media") {
+    const adId = String(body.ad_id ?? "");
+    const formats = ["INSTAGRAM_STANDARD", "INSTAGRAM_REELS", "INSTAGRAM_STORY", "MOBILE_FEED_STANDARD"];
+    const previews: Record<string, string> = {};
+    const errors: string[] = [];
+    await Promise.all(formats.map(async (f) => {
+      try {
+        const r = await graph(`${adId}/previews`, { ad_format: f });
+        const html = (((r.data as Json[]) ?? [])[0]?.body as string) ?? "";
+        const src = html.match(/src="([^"]+)"/)?.[1]?.replace(/&amp;/g, "&");
+        if (src) previews[f] = src;
+      } catch (e) { errors.push(`${f}: ${e instanceof Error ? e.message : String(e)}`); }
+    }));
+    return reply({ previews, errors });
+  }
 
   // ----- sync -----
   const days = Math.min(Math.max(Number(body.days) || 3, 1), FULL_HISTORY_DAYS);

@@ -98,6 +98,20 @@ export async function getLastSync(): Promise<SyncRun | null> {
   return (data as SyncRun[])[0] ?? null;
 }
 
+// Prévias oficiais do anúncio (Feed, Reels, Stories), com o vídeo tocando; o link do Meta expira, por isso é pedido na hora
+export async function getCreativeMedia(adId: string): Promise<{ previews: Record<string, string> }> {
+  if (DEMO) return { previews: {} };
+  const { data: s } = await supabase.auth.getSession();
+  const res = await fetch(`${FUNCTIONS_URL}/meta-sync`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${s.session?.access_token ?? ""}` },
+    body: JSON.stringify({ action: "media", ad_id: adId }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `Falha (${res.status})`);
+  return { previews: body.previews ?? {} };
+}
+
 export async function syncNow(opts: { accountId?: string; days?: number } = {}): Promise<{ ok: number; err: number; errors: string[] }> {
   if (DEMO) { await new Promise((r) => setTimeout(r, 1200)); return { ok: 1, err: 0, errors: [] }; }
   const { data: s } = await supabase.auth.getSession();

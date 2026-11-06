@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getCreativeDaily } from "../lib/api";
+import { getCreativeDaily, getCreativeMedia } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { count, money } from "../lib/format";
 import {
@@ -39,12 +39,69 @@ export function ScoreBadge({ c, size = "md" }: { c: ScoredCreative; size?: "md" 
   );
 }
 
+// Mostra o criativo inteiro (sem cortar) sobre um fundo desfocado da própria imagem.
+// Usa a imagem em alta resolução; se ela falhar, cai para a miniatura do Meta.
 function Thumb({ c }: { c: ScoredCreative }) {
-  const src = c.thumbnail_url ?? c.image_url;
-  const [broken, setBroken] = useState(false);
-  return src && !broken
-    ? <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setBroken(true)} />
-    : <span>{FORMAT_LABEL[c.format ?? ""] ?? "sem prévia"}</span>;
+  const sources = [c.image_url, c.thumbnail_url].filter(Boolean) as string[];
+  const [i, setI] = useState(0);
+  const src = sources[i];
+  if (!src) return <span>{FORMAT_LABEL[c.format ?? ""] ?? "sem prévia"}</span>;
+  return (
+    <>
+      <img className="media-bg" src={src} alt="" aria-hidden="true" loading="lazy" referrerPolicy="no-referrer" />
+      <img className="media-fg" src={src} alt="" loading="lazy" referrerPolicy="no-referrer" onError={() => setI((n) => n + 1)} />
+      {c.isVideo && <span className="media-play" aria-hidden="true">▶</span>}
+    </>
+  );
+}
+
+// Visualizador grande do painel de detalhe: a prévia oficial do anúncio (igual ao Gerenciador, com vídeo tocando)
+// e, como alternativa, a imagem em alta resolução
+const PREVIEW_TABS = [
+  { id: "INSTAGRAM_STANDARD", label: "Feed Instagram", h: 720 },
+  { id: "INSTAGRAM_REELS", label: "Reels", h: 760 },
+  { id: "INSTAGRAM_STORY", label: "Stories", h: 760 },
+  { id: "MOBILE_FEED_STANDARD", label: "Feed Facebook", h: 640 },
+  { id: "image", label: "Imagem em alta", h: 0 },
+];
+
+function MediaViewer({ c }: { c: ScoredCreative }) {
+  const media = useAsync(() => getCreativeMedia(c.ad_id), [c.ad_id]);
+  const previews = media.data?.previews ?? {};
+  const available = PREVIEW_TABS.filter((t) => (t.id === "image" ? !!(c.image_url ?? c.thumbnail_url) : !!previews[t.id]));
+  const [tab, setTab] = useState<string | null>(null);
+  const current = available.find((t) => t.id === tab) ?? available[0];
+  const image = c.image_url ?? c.thumbnail_url;
+
+  return (
+    <section className="dr-media">
+      {available.length > 1 && (
+        <div className="dr-tabs" role="tablist" aria-label="Como o anúncio aparece">
+          {available.map((t) => (
+            <button key={t.id} role="tab" aria-selected={current?.id === t.id} className={current?.id === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>
+          ))}
+        </div>
+      )}
+      <div className={`dr-stage ${current && current.id !== "image" ? "frame" : ""}`}>
+        {media.loading && <span className="dr-loading">Carregando a prévia do Meta…</span>}
+        {!media.loading && current && current.id !== "image" && (
+          <iframe key={current.id} src={previews[current.id]} title={`Prévia — ${current.label}`} style={{ height: current.h }} scrolling="no" />
+        )}
+        {!media.loading && current?.id === "image" && image && (
+          <>
+            <img className="media-bg" src={image} alt="" aria-hidden="true" referrerPolicy="no-referrer" />
+            <img className="media-fg" src={image} alt={`Criativo ${c.name ?? ""}`} referrerPolicy="no-referrer" />
+          </>
+        )}
+        {!media.loading && !current && <span className="muted">Sem prévia disponível</span>}
+      </div>
+      <div className="dr-media-foot">
+        <span className="help">{current && current.id !== "image" ? "Prévia oficial do Meta: o anúncio exatamente como o público vê." : ""}</span>
+        {current?.id === "image" && image && <a className="btn small" href={image} target="_blank" rel="noreferrer">Abrir em tamanho real</a>}
+        {current && current.id !== "image" && <a className="btn small" href={previews[current.id]} target="_blank" rel="noreferrer">Abrir em nova aba</a>}
+      </div>
+    </section>
+  );
 }
 
 export function CreativeCard({ c, onOpen, showClient = true }: { c: ScoredCreative; onOpen: () => void; showClient?: boolean }) {
@@ -118,7 +175,6 @@ export function CreativeDrawer({ c, days, onClose }: { c: ScoredCreative; days: 
     <div className="drawer-wrap" onClick={onClose}>
       <aside className="drawer" role="dialog" aria-modal="true" aria-label={c.name ?? "Criativo"} onClick={(e) => e.stopPropagation()}>
         <header className="dr-head">
-          <div className="dr-thumb"><Thumb c={c} /></div>
           <div className="dr-title">
             <p className="eyebrow">{c.client_name} · {FORMAT_LABEL[c.format ?? ""] ?? "—"}</p>
             <h2>{c.name ?? "Anúncio sem nome"}</h2>
@@ -132,6 +188,8 @@ export function CreativeDrawer({ c, days, onClose }: { c: ScoredCreative; days: 
           <ScoreBadge c={c} size="lg" />
           <button className="dr-close" onClick={onClose} aria-label="Fechar">×</button>
         </header>
+
+        <MediaViewer c={c} />
 
         <div className="dr-actions">
           <button className="btn primary small" onClick={() => copy("brief", briefing(c, { money, pct: pct2 }))}>
