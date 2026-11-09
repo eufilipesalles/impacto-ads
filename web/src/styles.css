@@ -759,3 +759,6 @@ textarea.input.wa { font: 13.5px/1.5 var(--body); resize: vertical; white-space:
 }
 .opt b { font-size: 14px; }
 @media (max-width: 760px) { .mg-summary { grid-template-columns: 1fr 1fr; } }
+.acc-row { display: grid; grid-template-columns: minmax(0,1fr) 220px auto auto; gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--line); }
+.acc-row b { overflow-wrap: anywhere; }
+@media (max-width: 760px) { .acc-row { grid-template-columns: 1fr; } }

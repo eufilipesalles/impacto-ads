@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { getClients, getRules, saveClient, saveCostCeiling } from "../lib/api";
 import { useAsync } from "../lib/hooks";
 import { OBJECTIVE_LABEL, type ClientRow, type Objective } from "../lib/types";
+import { MetaAccounts } from "../components/MetaAccounts";
 
 type Draft = { objective: Objective; budget: string; ceiling: string; active: boolean };
 
@@ -60,6 +61,7 @@ export function SettingsPage() {
           <p className="sub">A verba mensal ativa o alerta de ritmo de gasto. O teto de custo por conversa ativa o alerta de custo (média dos últimos 3 dias).</p>
         </div>
       </header>
+      <MetaAccounts clients={clients.data ?? []} onChange={() => clients.reload()} />
       <div className="card table-wrap">
         <table>
           <thead>
