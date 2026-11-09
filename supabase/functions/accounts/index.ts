@@ -90,7 +90,12 @@ async function discover(sb: SupabaseClient) {
     return { ...a, in_system: !!k, client_name: (k?.clients as unknown as { name: string } | null)?.name ?? null, ignored: ign.has(a.id as string) };
   }).sort((x, y) => Number(x.in_system) - Number(y.in_system) || String(x.name).localeCompare(String(y.name)));
   // contas no sistema que o token não enxerga mais (sem permissão)
-  const lost = (known ?? []).filter((k) => !found.has(k.id as string)).map((k) => ({ id: k.id, client_name: (k.clients as unknown as { name: string } | null)?.name ?? null }));
+  // contas no sistema que não aparecem na lista: confirma uma a uma (acesso via BM parceira não aparece em me/adaccounts)
+  const lost: Json[] = [];
+  for (const k of (known ?? []).filter((k) => !found.has(k.id as string))) {
+    try { await graph(k.id as string, { fields: "id" }); }
+    catch { lost.push({ id: k.id, client_name: (k.clients as unknown as { name: string } | null)?.name ?? null }); }
+  }
   return { accounts, businesses: bms.map((b) => ({ id: b.id, name: b.name })), lost, errors };
 }
 
