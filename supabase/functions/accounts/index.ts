@@ -26,7 +26,7 @@ async function appSecretProof() {
   proof = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
   return proof;
 }
-async function graph(path: string, params: Record<string, string> = {}): Promise<Json> {
+async function graph(path: string, params: Record<string, string> = {}, method: "GET" | "POST" = "GET"): Promise<Json> {
   const url = new URL(path.startsWith("http") ? path : `https://graph.facebook.com/${API_VERSION}/${path}`);
   if (!path.startsWith("http")) {
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
@@ -34,7 +34,7 @@ async function graph(path: string, params: Record<string, string> = {}): Promise
     const p = await appSecretProof();
     if (p) url.searchParams.set("appsecret_proof", p);
   }
-  const res = await fetch(url);
+  const res = method === "POST" ? await fetch(url, { method: "POST" }) : await fetch(url);
   const j = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`Meta (${(j as Json).error ? ((j as { error: { code?: number } }).error.code) : res.status}): ${((j as { error?: { message?: string } }).error?.message) ?? res.statusText}`);
   return j as Json;
@@ -144,6 +144,68 @@ async function cronSecret(sb: SupabaseClient) {
   return String(data ?? "");
 }
 
+
+// ---------- pedidos de acesso a contas de clientes ----------
+const norm = (id: string) => (String(id).trim().startsWith("act_") ? String(id).trim() : `act_${String(id).trim().replace(/\D/g, "")}`);
+const TASKS = JSON.stringify(["MANAGE", "ADVERTISE", "ANALYZE"]);
+
+// Para cada conta: o sistema já acessa? Se sim, cadastra; se não, pede acesso como parceira da BM da Impacto
+async function addByIds(sb: SupabaseClient, list: { id: string; client_name: string; client_id?: string }[], bmId?: string) {
+  const out: Json[] = [];
+  for (const item of list) {
+    const id = norm(item.id);
+    const { data: known } = await sb.from("ad_accounts").select("id, clients(name)").eq("id", id).maybeSingle();
+    if (known) { out.push({ id, client_name: item.client_name, status: "ja_no_sistema", note: `já cadastrada (${(known.clients as unknown as { name: string } | null)?.name ?? ""})` }); continue; }
+    let acc: Json | null = null;
+    try { acc = await graph(id, { fields: "id,name,account_status" }); } catch { acc = null; }
+    if (acc) {
+      const r = await importAccounts(sb, [{ id, name: String(acc.name ?? id), client_name: item.client_name, client_id: item.client_id }]);
+      const res = (r.results as Json[])[0] ?? {};
+      out.push({ id, client_name: item.client_name, status: res.ok ? "adicionada" : "erro", note: res.error ?? `conta "${acc.name}"` });
+      continue;
+    }
+    // sem acesso: registra o pedido e, com a BM informada, envia a solicitação ao cliente
+    let status = "sem_acesso", note = "Informe o ID da BM da Impacto para enviar o pedido de acesso.";
+    if (bmId) {
+      try {
+        await graph(`${bmId}/client_ad_accounts`, { adaccount_id: id, permitted_tasks: TASKS }, "POST");
+        status = "pedido_enviado"; note = "Pedido enviado: o cliente precisa aprovar na BM dele (Configurações do negócio › Solicitações).";
+      } catch (e) { status = "erro_pedido"; note = e instanceof Error ? e.message : String(e); }
+    }
+    await sb.from("ad_account_requests").upsert({ id, client_name: item.client_name, client_id: item.client_id ?? null, bm_id: bmId ?? null,
+      status, note, requested_at: new Date().toISOString() });
+    out.push({ id, client_name: item.client_name, status, note });
+  }
+  return { results: out };
+}
+
+// Roda todo dia: pedidos aprovados viram contas no sistema (atribui ao usuário do sistema e cadastra)
+async function processRequests(sb: SupabaseClient) {
+  const { data: pend } = await sb.from("ad_account_requests").select("*").in("status", ["pedido_enviado", "sem_acesso"]);
+  if (!pend?.length) return { checked: 0, added: 0 };
+  let me: string | null = null;
+  try { me = String((await graph("me", { fields: "id" })).id); } catch { /* sem id */ }
+  let added = 0;
+  for (const p of pend) {
+    let acc: Json | null = null;
+    try { acc = await graph(p.id, { fields: "id,name" }); } catch { acc = null; }
+    if (!acc && p.bm_id && me) {
+      // aprovado pelo cliente, mas ainda não atribuído ao usuário do sistema
+      try {
+        await graph(`${p.id}/assigned_users`, { user: me, tasks: TASKS, business: p.bm_id }, "POST");
+        acc = await graph(p.id, { fields: "id,name" });
+      } catch { acc = null; }
+    }
+    if (!acc) continue;
+    const r = await importAccounts(sb, [{ id: p.id, name: String(acc.name ?? p.id), client_name: p.client_name, client_id: p.client_id ?? undefined }]);
+    if (((r.results as Json[])[0] ?? {}).ok) {
+      added++;
+      await sb.from("ad_account_requests").update({ status: "adicionada", note: null, done_at: new Date().toISOString() }).eq("id", p.id);
+    }
+  }
+  return { checked: pend.length, added };
+}
+
 const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers": "authorization, content-type, x-client-info, apikey",
@@ -173,12 +235,15 @@ Deno.serve(async (req) => {
         else await sb.from("ad_accounts_ignored").upsert({ id: b.id, name: b.name ?? null });
         return reply({ ok: true });
       }
+      case "add_ids": return reply(await addByIds(sb, Array.isArray(b.accounts) ? b.accounts : [], b.bm_id ? String(b.bm_id) : undefined));
+      case "requests": return reply(await processRequests(sb));
       case "auto": {
+        const pending = await processRequests(sb);
         // toda conta ativa nova que aparecer (e não estiver ignorada) entra sozinha, com o cliente criado pelo nome da conta
         const d = await discover(sb);
         const fresh = (d.accounts as Json[]).filter((a) => !a.in_system && !a.ignored && Number(a.account_status) === 1);
         const r = await importAccounts(sb, fresh.map((a) => ({ id: String(a.id), name: String(a.name) })));
-        return reply({ found: d.accounts.length, new: fresh.length, ...r, errors: d.errors });
+        return reply({ found: d.accounts.length, new: fresh.length, ...r, requests: pending, errors: d.errors });
       }
       default: return reply({ error: "ação desconhecida" }, 400);
     }

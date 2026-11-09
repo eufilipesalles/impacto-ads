@@ -24,3 +24,17 @@ select cron.schedule('contas-novas', '50 8 * * *', $job$
     body    := '{"action": "auto"}'::jsonb,
     timeout_milliseconds := 120000);
 $job$);
+
+-- Pedidos de acesso a contas de clientes (enviados pela BM da Impacto; entram sozinhos quando o cliente aprova)
+create table if not exists public.ad_account_requests (
+  id           text primary key,
+  client_name  text not null,
+  client_id    uuid references public.clients(id) on delete set null,
+  bm_id        text,
+  status       text not null,   -- sem_acesso | pedido_enviado | erro_pedido | adicionada
+  note         text,
+  requested_at timestamptz not null default now(),
+  done_at      timestamptz
+);
+alter table public.ad_account_requests enable row level security;
+create policy "equipe_le_pedidos" on public.ad_account_requests for select to authenticated using ((select public.is_team_member()));
